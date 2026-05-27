@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Zara</string>
+    <string name="accessibility_description">Zara uses accessibility services to control your phone by voice</string>
+    <string name="notification_listening">Listening for \'Hey Zara\'…</string>
+    <string name="notification_active">Zara is active</string>
+</resources>
