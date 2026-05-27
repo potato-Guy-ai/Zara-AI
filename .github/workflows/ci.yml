@@ -11,18 +11,23 @@ jobs:
   python-tests:
     name: AI Engine Unit Tests
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - run: pip install pytest
-      - run: python -m pytest zara/ai_core/tests/ -v --tb=short
+
+      - run: python -m pytest ai_core/tests/ -v --tb=short
 
   # ── Android build ─────────────────────────────────────────────
   android-build:
     name: Build Debug APK
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -39,21 +44,24 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
 
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
       - name: Build debug APK
-        working-directory: zara
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: zara-debug
-          path: zara/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
 
   # ── Android instrumented tests on emulator ────────────────────
   android-test:
     name: Instrumented Tests
     runs-on: ubuntu-latest
     needs: android-build
+
     steps:
       - uses: actions/checkout@v4
 
@@ -68,11 +76,13 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
       - name: Run instrumented tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
           arch: x86_64
           profile: Nexus 6
-          working-directory: zara
           script: ./gradlew connectedAndroidTest --no-daemon
