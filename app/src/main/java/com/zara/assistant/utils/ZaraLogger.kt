@@ -4,12 +4,9 @@ import android.util.Log
 
 object ZaraLogger {
     private const val TAG = "Zara"
-    private var verbose = true
+    private var debug = false
 
-    fun init(debug: Boolean = true) { verbose = debug }
-
-    fun v(msg: String) { if (verbose) Log.v(TAG, msg) }
-    fun d(msg: String) { Log.d(TAG, msg) }
-    fun w(msg: String) { Log.w(TAG, msg) }
+    fun init(isDebug: Boolean) { debug = isDebug }
+    fun d(msg: String) { if (debug) Log.d(TAG, msg) }
     fun e(msg: String) { Log.e(TAG, msg) }
 }
