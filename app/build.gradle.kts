@@ -65,9 +65,13 @@ dependencies {
 
     // Core Android
     implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
+
+    // Material Components (required for XML Theme.Material3)
+    implementation("com.google.android.material:material:1.11.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
@@ -78,7 +82,7 @@ dependencies {
     // OkHttp (cloud AI calls)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
-    // ONNX Runtime (wake word model inference - optional)
+    // ONNX Runtime (wake word model inference - optional, swap out later)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
 
     // Testing
@@ -86,7 +90,3 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }
-
-// NOTE: Vosk removed. Android SpeechRecognizer used instead.
-// NOTE: Room removed - DataStore sufficient for current memory needs.
-// NOTE: Navigation removed - single screen assistant flow.
