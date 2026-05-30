@@ -1,127 +1,105 @@
-# Zara-AI
-Android Based AI voice Assistant for the local computation and user support
-# Zara — Private AI Voice Assistant for Android
+# Zara AI — Private Android Assistant
 
-## Quick Start
-
-### 1. Clone & Open
-```bash
-git clone <repo>
-cd zara
-```
-
-### 2. Download required AI models
-
-#### Vosk STT model (~40MB)
-```bash
-cd app/src/main/assets
-wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
-unzip vosk-model-small-en-us-0.15.zip
-mv vosk-model-small-en-us-0.15 vosk-model-small-en-us
-```
-
-#### Wake word model
-- Option A: Use [openWakeWord](https://github.com/dscripka/openWakeWord) to train "hey zara"
-- Option B: Use [Porcupine](https://picovoice.ai/platform/porcupine/) free tier
-- Place as: `app/src/main/assets/models/wake_word.tflite`
-- Without a model, falls back to energy-based VAD (always triggers on loud audio)
-
-#### Optional: Piper TTS (high quality voice)
-```bash
-# Download piper for Android (ARM64)
-# https://github.com/rhasspy/piper/releases
-mkdir -p app/src/main/assets/piper
-# Place: piper binary + en_US-amy-low.onnx
-```
-
-### 3. Build APK (no Android Studio needed)
-
-#### Via Gitpod (free cloud IDE)
-1. Open https://gitpod.io/#<your-repo-url>
-2. Run: `cd zara && ./gradlew assembleDebug`
-3. Download APK from: `app/build/outputs/apk/debug/app-debug.apk`
-
-#### Via GitHub Actions
-Push to main → CI auto-builds APK → download from Actions artifacts
-
-### 4. Install on Phone (no Android Studio needed)
-
-#### ADB over Wi-Fi
-```bash
-# On phone: Settings > Developer Options > Wireless Debugging > enable
-# Note the IP:PORT shown
-adb connect 192.168.x.x:PORT
-adb install app/build/outputs/apk/debug/app-debug.apk
-adb logcat -s Zara   # live logs
-```
-
-#### Direct sideload
-- Transfer APK to phone via USB/cloud
-- Enable "Install unknown apps" for Files app
-- Tap APK to install
-
-### 5. First-time setup on phone
-1. Open Zara
-2. Grant all permissions when prompted
-3. Go to **Settings > Accessibility > Zara Assistant** → Enable
-4. Go to **Settings > Notifications > Notification Access > Zara** → Enable
-5. Say "Hey Zara" — it should respond!
-
----
-
-## Testing Without Phone
-
-### Python unit tests (AI intent engine)
-```bash
-pip install pytest
-python -m pytest ai_core/tests/ -v
-```
-Expected: 30+ tests pass in ~1 second, no Android needed.
-
-### Browser emulator
-Upload APK to https://appetize.io (free 100 min/month)
+Version 2.0 | Orchestration-first architecture
 
 ---
 
 ## Architecture
 
 ```
-ZaraApplication
-    └── ZaraCoreService (foreground, always running)
-            ├── WakeWordEngine   → TFLite model / energy fallback
-            ├── SpeechRecognizer → Vosk offline STT
-            ├── ZaraAIEngine     → Intent matching + dispatch
-            └── TTSEngine        → Android TTS / Piper
-
-Automation layer:
-    ├── DeviceAutomation    → WiFi, BT, volume, camera, apps
-    ├── PhoneAutomation     → calls, answer, hang up
-    ├── MessagingAutomation → SMS, WhatsApp
-    ├── CalendarAutomation  → events, schedule
-    ├── ZaraAccessibilityService → lock, home, back, screenshot
-    └── ZaraNotificationListener → read all notifications
+Voice/Text
+  → STT (Android SpeechRecognizer)
+  → SttCorrectionLayer       ← Tanglish / app-name fixes
+  → LocalIntentClassifier    ← structured ZaraIntent
+  → IntentRouter
+      ├── ActionExecutor     ← local device actions
+      ├── Conversation       ← local responses
+      └── CloudReasoningClient (optional, privacy-filtered)
+  → TtsManager
 ```
 
-## Wake Phrases
-- "Hey Zara"
-- "Wake up Zara"
+### Package structure
+```
+com.zara.assistant/
+├── core/          IntentRouter, ZaraIntent, LocalIntentClassifier, PrivacyFilter
+├── voice/         VoiceSessionManager, SttManager, TtsManager, WakeWordManager, SttCorrectionLayer
+├── actions/       ActionExecutor, AppActions, CallActions, MediaActions
+├── services/      ZaraForegroundService, AccessibilityAutomationService, ZaraNotificationListener
+├── memory/        MemoryManager
+├── cloud/         AiProvider, GeminiProvider, CloudReasoningClient
+├── permissions/   PermissionManager
+├── ui/            MainActivity, AssistantViewModel, ChatMessage
+└── utils/         ZaraLogger
+```
 
-## Voice Commands (examples)
-| Command | Action |
-|---------|--------|
-| Call mom | Dials contact |
-| Turn on WiFi | Enables WiFi |
-| Send message to John saying hi | SMS |
-| Open WhatsApp | Launches app |
-| Volume up | Raises media volume |
-| Turn on flashlight | Torch on |
-| Lock the phone | Screen lock |
-| What time is it | Speaks time |
-| Set alarm for 7am | Opens clock |
+---
+
+## What changed in v2
+
+| Old | New |
+|-----|-----|
+| Vosk offline STT | Android SpeechRecognizer (multilingual, Tanglish) |
+| Raw regex command matching | Structured ZaraIntent + LocalIntentClassifier |
+| Monolithic ZaraAIEngine | IntentRouter + ActionExecutor |
+| Multiple wake phrases | Only "Hey Zara" |
+| No correction layer | SttCorrectionLayer (app names, Tanglish) |
+| No cloud abstraction | Optional AiProvider (Gemini pluggable) |
+| No privacy filter | PrivacyFilter strips PII before any cloud call |
+
+---
+
+## Setup
+
+### 1. Clone & open
+```bash
+git clone https://github.com/potato-Guy-ai/Zara-AI.git
+```
+Open in Android Studio.
+
+### 2. Wake word (choose one)
+- **Porcupine (recommended):** Get free API key at [picovoice.ai](https://picovoice.ai), add keyword file, implement `WakeWordEngine` interface in `WakeWordManager.kt`
+- **Fallback:** Energy VAD is active by default (triggers on loud audio — replace before production)
+
+### 3. Optional: Piper TTS
+Place Piper binary + ONNX model in `assets/piper/`, implement alternative `TtsManager` provider.
+
+### 4. Optional: Cloud AI
+```kotlin
+// In ZaraApplication.onCreate():
+CloudReasoningClient.configure(GeminiProvider(apiKey = "YOUR_KEY"))
+```
+Cloud is never called for device actions. Only used for complex reasoning queries.
+
+### 5. Build
+```bash
+./gradlew assembleDebug
+```
+APK: `app/build/outputs/apk/debug/app-debug.apk`
+
+---
+
+## First-time on device
+1. Install APK
+2. Grant permissions on launch
+3. Settings → Accessibility → Zara Assistant → Enable
+4. Settings → Notifications → Notification Access → Zara → Enable
+5. Say **"Hey Zara"**
+
+---
+
+## Performance targets
+
+| Metric | Target |
+|--------|--------|
+| APK size | 50–120 MB |
+| RAM idle | 150–300 MB |
+| RAM active | 300–600 MB |
+
+---
 
 ## Privacy
-- All processing is on-device
-- No data sent to OpenAI, Google AI, Claude, or any external AI
-- Vosk STT runs locally
-- TFLite wake word runs locally
-- Optional: llama.cpp local LLM on device or LAN
+- All voice processing on-device
+- Cloud AI optional, off by default
+- PII stripped before any cloud call
+- No analytics, no tracking
+- Full user data deletion via `MemoryManager.clearAll()`

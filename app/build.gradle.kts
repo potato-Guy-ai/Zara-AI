@@ -11,14 +11,15 @@ android {
         applicationId = "com.zara.assistant"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
         debug {
@@ -28,6 +29,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -51,7 +53,7 @@ android {
 }
 
 dependencies {
-    // Jetpack Compose BOM
+    // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.02.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -63,36 +65,28 @@ dependencies {
 
     // Core Android
     implementation("androidx.core:core-ktx:1.12.0")
-    implementation("com.google.android.material:material:1.11.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-    implementation("androidx.navigation:navigation-compose:2.7.7")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // Room (local storage)
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-
-    // DataStore (preferences)
+    // DataStore (local memory)
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
-    // Vosk (offline STT) - via JitPack
-    implementation("com.alphacephei:vosk-android:0.3.47")
-
-    // ONNX Runtime (wake word inference)
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
-
-    // OkHttp (optional: local server communication)
+    // OkHttp (cloud AI calls)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // ONNX Runtime (wake word model inference - optional)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    androidTestImplementation(composeBom)
-    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
+
+// NOTE: Vosk removed. Android SpeechRecognizer used instead.
+// NOTE: Room removed - DataStore sufficient for current memory needs.
+// NOTE: Navigation removed - single screen assistant flow.
