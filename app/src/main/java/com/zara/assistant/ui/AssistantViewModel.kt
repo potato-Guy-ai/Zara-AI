@@ -21,13 +21,18 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun processText(text: String) {
         addMessage(text, MessageRole.USER)
         voiceSession.processText(text) { response ->
+            // already on Main thread from VoiceSessionManager
             addMessage(response, MessageRole.ZARA)
         }
     }
 
     fun startVoice() {
         _isListening.value = true
-        voiceSession.processText("__voice_trigger__") {}
+        // Trigger STT directly from UI mic button
+        voiceSession.processText("hey zara") { response ->
+            _isListening.value = false
+            addMessage(response, MessageRole.ZARA)
+        }
     }
 
     fun onPermissionsResult() {}

@@ -2,12 +2,12 @@ package com.zara.assistant.voice
 
 import android.content.Context
 import com.zara.assistant.core.IntentRouter
-import com.zara.assistant.core.ZaraIntent
+import com.zara.assistant.core.LocalIntentClassifier
 import kotlinx.coroutines.*
 
 /**
- * Owns the full voice lifecycle:
- * wake → STT → correction → intent → action → TTS
+ * Owns the full voice lifecycle.
+ * Also handles typed text input from UI.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -37,16 +37,19 @@ class VoiceSessionManager(private val context: Context) {
         if (isListening) return
         isListening = true
         wakeWordManager.pause()
-        ttsManager.speak("Yes?") {
-            startListeningSession()
-        }
+        ttsManager.speak("Yes?") { startListeningSession() }
     }
 
     private fun startListeningSession() {
         sttManager.startListening { rawText ->
+            if (rawText.isBlank()) {
+                isListening = false
+                wakeWordManager.resume()
+                return@startListening
+            }
             scope.launch {
                 val corrected = correctionLayer.correct(rawText)
-                val intent = com.zara.assistant.core.LocalIntentClassifier.classify(corrected)
+                val intent = LocalIntentClassifier.classify(corrected)
                 val response = intentRouter.route(intent)
                 ttsManager.speak(response) {
                     isListening = false
@@ -56,13 +59,16 @@ class VoiceSessionManager(private val context: Context) {
         }
     }
 
-    /** Called from UI for typed input */
+    /**
+     * Called from UI for typed or programmatic text input.
+     * onResponse is always invoked on the Main thread.
+     */
     fun processText(text: String, onResponse: (String) -> Unit) {
         scope.launch {
             val corrected = correctionLayer.correct(text)
-            val intent = com.zara.assistant.core.LocalIntentClassifier.classify(corrected)
+            val intent = LocalIntentClassifier.classify(corrected)
             val response = intentRouter.route(intent)
-            onResponse(response)
+            withContext(Dispatchers.Main) { onResponse(response) }
         }
     }
 }
