@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.services.ZaraForegroundService
+import com.zara.assistant.ui.theme.ZaraTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -59,37 +60,35 @@ fun ZaraScreen(vm: AssistantViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0D0D0D))
+            .background(MaterialTheme.colorScheme.background)
             .systemBarsPadding()
     ) {
-        // Header
         Text(
             text = "Zara",
-            color = Color(0xFF9B59B6),
+            color = MaterialTheme.colorScheme.primary,
             fontSize = 22.sp,
             modifier = Modifier.padding(16.dp)
         )
 
-        // Chat area
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
+            modifier = Modifier
+                .weight(1f)
+                .padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(messages) { msg -> MessageBubble(msg) }
         }
 
-        // Listening indicator
         if (isListening) {
             Text(
                 "Listening...",
-                color = Color(0xFF9B59B6),
+                color = MaterialTheme.colorScheme.primary,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
         }
 
-        // Input row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -106,10 +105,10 @@ fun ZaraScreen(vm: AssistantViewModel) {
                     if (inputText.isNotBlank()) { vm.processText(inputText); inputText = "" }
                 }),
                 colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color(0xFF1A1A1A),
-                    unfocusedContainerColor = Color(0xFF1A1A1A),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
+                    focusedContainerColor = MaterialTheme.colorScheme.surface,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                    focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                    unfocusedTextColor = MaterialTheme.colorScheme.onSurface
                 ),
                 shape = RoundedCornerShape(24.dp)
             )
@@ -117,13 +116,14 @@ fun ZaraScreen(vm: AssistantViewModel) {
             IconButton(onClick = {
                 if (inputText.isNotBlank()) { vm.processText(inputText); inputText = "" }
             }) {
-                Icon(Icons.Default.Send, contentDescription = "Send", tint = Color(0xFF9B59B6))
+                Icon(Icons.Default.Send, contentDescription = "Send",
+                    tint = MaterialTheme.colorScheme.primary)
             }
             IconButton(onClick = { vm.startVoice() }) {
                 Icon(
                     Icons.Default.Mic,
                     contentDescription = "Voice",
-                    tint = if (isListening) Color(0xFF9B59B6) else Color.Gray
+                    tint = if (isListening) MaterialTheme.colorScheme.primary else Color.Gray
                 )
             }
         }
@@ -140,25 +140,18 @@ fun MessageBubble(msg: ChatMessage) {
         Box(
             modifier = Modifier
                 .background(
-                    if (isUser) Color(0xFF9B59B6) else Color(0xFF1E1E1E),
+                    if (isUser) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surface,
                     RoundedCornerShape(16.dp)
                 )
                 .padding(horizontal = 14.dp, vertical = 10.dp)
                 .widthIn(max = 280.dp)
         ) {
-            Text(msg.text, color = Color.White, fontSize = 15.sp)
+            Text(
+                msg.text,
+                color = if (isUser) Color.White else MaterialTheme.colorScheme.onSurface,
+                fontSize = 15.sp
+            )
         }
     }
-}
-
-@Composable
-fun ZaraTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Color(0xFF9B59B6),
-            background = Color(0xFF0D0D0D),
-            surface = Color(0xFF1A1A1A)
-        ),
-        content = content
-    )
 }

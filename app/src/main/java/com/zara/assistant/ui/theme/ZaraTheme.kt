@@ -5,31 +5,26 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-private val Purple = Color(0xFF6C63FF)
-private val PurpleContainer = Color(0xFFE8E6FF)
-private val DarkBackground = Color(0xFF0F0F1A)
-private val DarkSurface = Color(0xFF1A1A2E)
+private val Purple = Color(0xFF9B59B6)
+private val DarkBackground = Color(0xFF0D0D0D)
+private val DarkSurface = Color(0xFF1A1A1A)
 
-private val DarkColorScheme = darkColorScheme(
+private val ZaraDarkColors = darkColorScheme(
     primary = Purple,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFF3D3780),
     background = DarkBackground,
     surface = DarkSurface,
-    surfaceVariant = Color(0xFF252540),
+    surfaceVariant = Color(0xFF252525),
     onSurface = Color.White,
-    onSurfaceVariant = Color(0xFFBBBBDD)
+    onSurfaceVariant = Color(0xFFBBBBBB)
 )
 
-private val LightColorScheme = lightColorScheme(
+private val ZaraLightColors = lightColorScheme(
     primary = Purple,
     onPrimary = Color.White,
-    primaryContainer = PurpleContainer,
-    background = Color(0xFFF8F8FF),
+    background = Color(0xFFF5F5F5),
     surface = Color.White,
-    surfaceVariant = Color(0xFFF0EFFF),
-    onSurface = Color(0xFF1A1A2E),
-    onSurfaceVariant = Color(0xFF4A4A6A)
+    onSurface = Color(0xFF0D0D0D)
 )
 
 @Composable
@@ -37,9 +32,8 @@ fun ZaraTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
     MaterialTheme(
-        colorScheme = colorScheme,
+        colorScheme = if (darkTheme) ZaraDarkColors else ZaraLightColors,
         content = content
     )
 }

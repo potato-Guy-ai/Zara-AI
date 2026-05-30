@@ -28,12 +28,9 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun startVoice() {
         _isListening.value = true
         voiceSession.processText("__voice_trigger__") {}
-        // Voice input flows through VoiceSessionManager internally
     }
 
-    fun onPermissionsResult() {
-        // Re-evaluate state after permissions granted
-    }
+    fun onPermissionsResult() {}
 
     private fun addMessage(text: String, role: MessageRole) {
         viewModelScope.launch {
