@@ -23,10 +23,15 @@ import java.security.SecureRandom
 object IdentityManager {
 
     /**
-     * Base32 alphabet: 32 characters, excludes ambiguous O, 0, I, 1.
-     * Produces IDs that are readable aloud and easy to transcribe.
+     * Base32 alphabet: 32 characters.
+     * Excludes ambiguous characters: O, 0, I, 1.
+     * Includes U (distinguishable from V in uppercase context).
+     * Alphabet: ABCDEFGHJKLMNPQRSTUVWXYZ23456789
+     *
+     * 32 chars = exactly 5 bits per character.
+     * Index range 0-31 maps to all 5-bit values with no gaps.
      */
-    private const val BASE32_ALPHABET = "ABCDEFGHJKLMNPQRSTVWXYZ23456789"
+    private const val BASE32_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     private const val IDENTITY_VERSION = 1
 
     @Volatile private var identity: ZaraIdentity? = null
@@ -88,17 +93,16 @@ object IdentityManager {
 
     /**
      * Generates a public Zara ID from 160 bits (20 bytes) of SecureRandom entropy.
-     * Encodes into Base32 using [BASE32_ALPHABET], formatted as:
-     * ZR-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX  (5 groups of 5 chars)
      *
-     * 20 bytes → 160 bits → 32 Base32 chars (5 bits each = 160 bits).
-     * Only 25 chars are used (5×5), consuming 125 of the 160 bits.
-     * Remaining bits are discarded — no information leakage.
+     * Encoding: 5 bits per character into BASE32_ALPHABET (32 chars, indices 0-31).
+     * 20 bytes = 160 bits → 32 Base32 chars available; we use 25 (5 groups of 5).
+     * The remaining 7 bits (160 - 125) are discarded — no information leakage.
+     *
+     * Result: ZR-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
      */
     private fun generateZaraId(rng: SecureRandom): String {
         val bytes = ByteArray(20).also { rng.nextBytes(it) }
         val chars = CharArray(25)
-        // Extract 5 bits per character from the byte stream
         var bitBuffer = 0
         var bitsInBuffer = 0
         var charIndex = 0
@@ -107,11 +111,14 @@ object IdentityManager {
             bitsInBuffer += 8
             while (bitsInBuffer >= 5 && charIndex < 25) {
                 bitsInBuffer -= 5
+                // (bitBuffer shr bitsInBuffer) and 0x1F produces values 0-31
+                // BASE32_ALPHABET has exactly 32 chars — all indices valid
                 chars[charIndex++] = BASE32_ALPHABET[(bitBuffer shr bitsInBuffer) and 0x1F]
             }
         }
-        // Format as ZR-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
-        return "ZR-${String(chars, 0, 5)}-${String(chars, 5, 5)}-${String(chars, 10, 5)}-${String(chars, 15, 5)}-${String(chars, 20, 5)}"
+        return "ZR-${String(chars, 0, 5)}-${String(chars, 5, 5)}" +
+               "-${String(chars, 10, 5)}-${String(chars, 15, 5)}" +
+               "-${String(chars, 20, 5)}"
     }
 
     /**
@@ -127,5 +134,8 @@ object IdentityManager {
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     private fun requireIdentity(): ZaraIdentity =
-        identity ?: error("IdentityManager not initialised. Call IdentityManager.init(context) in Application.onCreate().")
+        identity ?: error(
+            "IdentityManager not initialised. " +
+            "Call IdentityManager.init(context) in Application.onCreate()."
+        )
 }

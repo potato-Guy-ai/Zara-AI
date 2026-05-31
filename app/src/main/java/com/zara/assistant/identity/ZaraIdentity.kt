@@ -5,7 +5,8 @@ package com.zara.assistant.identity
  *
  * [zaraId]    — Public, user-facing ID. Safe to display and share.
  *               Format: ZR-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
- *               Alphabet: ABCDEFGHJKLMNPQRSTVWXYZ23456789 (no O, 0, I, 1)
+ *               Alphabet: ABCDEFGHJKLMNPQRSTUVWXYZ23456789
+ *               (32 chars; excludes ambiguous O, 0, I, 1)
  *
  * [internalId] — Private system ID. 256-bit entropy, hex-encoded (64 chars).
  *                MUST NOT be returned to UI layers.
@@ -33,8 +34,19 @@ data class ZaraIdentity internal constructor(
     }
 
     companion object {
-        /** Regex validating ZR-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX format. */
-        val ZARA_ID_REGEX = Regex("^ZR-[ABCDEFGHJKLMNPQRSTVWXYZ23456789]{5}-[ABCDEFGHJKLMNPQRSTVWXYZ23456789]{5}-[ABCDEFGHJKLMNPQRSTVWXYZ23456789]{5}-[ABCDEFGHJKLMNPQRSTVWXYZ23456789]{5}-[ABCDEFGHJKLMNPQRSTVWXYZ23456789]{5}$")
+        /**
+         * Regex validating ZR-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX format.
+         * Alphabet is 32 chars: ABCDEFGHJKLMNPQRSTUVWXYZ23456789
+         * (excludes O, 0, I, 1 — includes U)
+         */
+        val ZARA_ID_REGEX = Regex(
+            "^ZR" +
+            "-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}" +
+            "-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}" +
+            "-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}" +
+            "-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}" +
+            "-[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{5}$"
+        )
         /** Regex validating 64 lowercase hex characters. */
         val INTERNAL_ID_REGEX = Regex("^[0-9a-f]{64}$")
     }
