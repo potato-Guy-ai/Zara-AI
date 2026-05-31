@@ -5,10 +5,6 @@ import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
 import kotlinx.coroutines.*
 
-/**
- * Owns the full voice lifecycle.
- * Also handles typed text input from UI.
- */
 class VoiceSessionManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -17,6 +13,7 @@ class VoiceSessionManager(private val context: Context) {
     private val wakeWordManager = WakeWordManager(context)
     private val correctionLayer = SttCorrectionLayer()
     private val intentRouter = IntentRouter(context)
+    private val classifier = LocalIntentClassifier()  // class instance, not object
 
     var isListening = false
         private set
@@ -49,7 +46,7 @@ class VoiceSessionManager(private val context: Context) {
             }
             scope.launch {
                 val corrected = correctionLayer.correct(rawText)
-                val intent = LocalIntentClassifier.classify(corrected)
+                val intent = classifier.classify(corrected)
                 val response = intentRouter.route(intent)
                 ttsManager.speak(response) {
                     isListening = false
@@ -59,14 +56,10 @@ class VoiceSessionManager(private val context: Context) {
         }
     }
 
-    /**
-     * Called from UI for typed or programmatic text input.
-     * onResponse is always invoked on the Main thread.
-     */
     fun processText(text: String, onResponse: (String) -> Unit) {
         scope.launch {
             val corrected = correctionLayer.correct(text)
-            val intent = LocalIntentClassifier.classify(corrected)
+            val intent = classifier.classify(corrected)
             val response = intentRouter.route(intent)
             withContext(Dispatchers.Main) { onResponse(response) }
         }
