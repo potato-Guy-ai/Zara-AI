@@ -8,7 +8,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * Central orchestrator — routes ZaraIntent to the correct handler.
- * Does NOT contain conversation logic (delegated to ConversationEngine).
+ * Updated for C7: CloudReasoningClient.getInstance() takes no context argument.
  */
 class IntentRouter(private val context: Context) {
 
@@ -26,13 +26,12 @@ class IntentRouter(private val context: Context) {
     }
 
     private suspend fun routeToCloud(intent: ZaraIntent): String {
-        // Gate: only CLOUD intents reach here; sanitize all fields before dispatch
         if (!privacyFilter.isSafeForCloud(intent)) {
             return "I can't send that to the cloud."
         }
         val sanitized = privacyFilter.sanitizeIntent(intent)
         return try {
-            com.zara.assistant.cloud.CloudReasoningClient.getInstance(context)
+            com.zara.assistant.cloud.CloudReasoningClient.getInstance()
                 ?.query(sanitized) ?: "Cloud AI not configured."
         } catch (e: Exception) {
             "Couldn't reach cloud reasoning right now."

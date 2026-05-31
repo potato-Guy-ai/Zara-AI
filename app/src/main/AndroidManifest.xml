@@ -33,6 +33,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 
+    <!-- Do Not Disturb / Silent mode (special permission, not runtime) -->
+    <!-- C5 fix: declared so the system lists Zara in DND access settings -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
     <!-- System -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -74,14 +78,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Foreground service (replaces ZaraCoreService) -->
         <service
             android:name=".services.ZaraForegroundService"
             android:exported="false"
             android:foregroundServiceType="microphone"
             android:enabled="true" />
 
-        <!-- Accessibility -->
         <service
             android:name=".services.AccessibilityAutomationService"
             android:exported="true"
@@ -95,7 +97,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- Notification Listener -->
         <service
             android:name=".services.ZaraNotificationListener"
             android:exported="true"
@@ -106,7 +107,6 @@
             </intent-filter>
         </service>
 
-        <!-- Boot receiver -->
         <receiver
             android:name=".service.BootReceiver"
             android:exported="true">

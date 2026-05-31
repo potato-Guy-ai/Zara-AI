@@ -1,19 +1,17 @@
 package com.zara.assistant.cloud
 
-import android.content.Context
-
 /**
  * Cloud reasoning abstraction.
  * Only called when IntentRouter decides CLOUD is needed.
- * Never sends: contacts, memory, raw commands.
+ * Never receives: contact names, SMS bodies, memory, raw device commands.
+ *
+ * C7 fix: getInstance() no longer accepts a Context parameter it never used.
+ * All call sites updated accordingly.
  */
 interface AiProvider {
     suspend fun query(prompt: String): String
 }
 
-/**
- * Singleton client. Returns null if no provider configured.
- */
 class CloudReasoningClient private constructor(
     private val provider: AiProvider
 ) {
@@ -22,8 +20,10 @@ class CloudReasoningClient private constructor(
     companion object {
         @Volatile private var instance: CloudReasoningClient? = null
 
-        fun getInstance(context: Context): CloudReasoningClient? = instance
+        /** Returns the configured provider, or null if cloud has not been set up. */
+        fun getInstance(): CloudReasoningClient? = instance
 
+        /** Call once from ZaraApplication when the user opts into cloud reasoning. */
         fun configure(provider: AiProvider) {
             instance = CloudReasoningClient(provider)
         }
