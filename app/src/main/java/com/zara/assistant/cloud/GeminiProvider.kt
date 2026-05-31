@@ -15,8 +15,10 @@ import java.util.concurrent.TimeUnit
  * Plugged in only when user opts into cloud reasoning.
  * API key is passed at construction — never stored in source or shared prefs.
  *
- * C6 fix: response body is now closed in a finally block on every code path,
- * preventing OkHttp connection pool exhaustion.
+ * C6 fix: response body closed via use{}. 
+ * CR-1 fix: removed the finally block that called source().exhausted() on an
+ * already-closed ResponseBody, which threw IllegalStateException on every
+ * successful response. use{} alone is sufficient and correct per OkHttp docs.
  */
 class GeminiProvider(private val apiKey: String) : AiProvider {
 
@@ -42,7 +44,8 @@ class GeminiProvider(private val apiKey: String) : AiProvider {
             return@withContext "Cloud reasoning unavailable."
         }
 
-        // C6: use() closes body on both success and exception paths
+        // use{} closes and releases the body on both success and exception paths.
+        // No finally block needed — accessing source() after use{} throws.
         return@withContext try {
             response.body?.use { body ->
                 val raw = body.string()
@@ -52,11 +55,6 @@ class GeminiProvider(private val apiKey: String) : AiProvider {
         } catch (e: Exception) {
             ZaraLogger.e("Gemini parse error: ${e.message}")
             "Cloud reasoning unavailable."
-        } finally {
-            // Defensive close — use() handles it, but this guards against future refactors
-            if (!response.body.let { it == null || it.source().exhausted() }) {
-                runCatching { response.close() }
-            }
         }
     }
 

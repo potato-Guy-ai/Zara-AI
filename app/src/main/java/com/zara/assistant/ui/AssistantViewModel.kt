@@ -21,17 +21,21 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     fun processText(text: String) {
         addMessage(text, MessageRole.USER)
         voiceSession.processText(text) { response ->
-            // already on Main thread from VoiceSessionManager
             addMessage(response, MessageRole.ZARA)
         }
     }
 
+    /**
+     * CR-2 fix: mic button now triggers real STT via startManualListening().
+     * Previously sent "hey zara" to the classifier, which returned a greeting
+     * and never opened the microphone.
+     */
     fun startVoice() {
+        if (_isListening.value) return
         _isListening.value = true
-        // Trigger STT directly from UI mic button
-        voiceSession.processText("hey zara") { response ->
+        voiceSession.startManualListening { response ->
             _isListening.value = false
-            addMessage(response, MessageRole.ZARA)
+            if (response.isNotBlank()) addMessage(response, MessageRole.ZARA)
         }
     }
 
