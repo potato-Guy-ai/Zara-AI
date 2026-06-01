@@ -3,22 +3,14 @@ package com.zara.assistant.permissions
 import android.app.NotificationManager
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.content.ContextCompat
 
-/**
- * Centralized permission checks for all Zara features.
- *
- * L3 / C5 fix: added hasDndAccess() for silent mode.
- * ACCESS_NOTIFICATION_POLICY is a special permission granted via settings,
- * not via the runtime permission dialog — it is intentionally excluded from
- * REQUIRED (which covers runtime permissions only).
- */
 object PermissionManager {
 
     /**
      * Runtime permissions requested on first launch.
-     * Do NOT include special permissions here (overlay, DND, accessibility,
-     * notification listener) — those require dedicated settings intents.
+     * BLUETOOTH_CONNECT is handled separately (API 31+ only, see hasBluetoothConnect).
      */
     val REQUIRED = arrayOf(
         android.Manifest.permission.RECORD_AUDIO,
@@ -36,7 +28,7 @@ object PermissionManager {
     fun missing(context: Context): Array<String> =
         REQUIRED.filter { !has(context, it) }.toTypedArray()
 
-    // ── Special permissions (not requestable via runtime dialog) ─────────────
+    // ── Special permissions ──────────────────────────────────────────────────────
 
     fun hasOverlay(context: Context): Boolean =
         android.provider.Settings.canDrawOverlays(context)
@@ -57,13 +49,22 @@ object PermissionManager {
         return enabled.contains(context.packageName, ignoreCase = true)
     }
 
-    /**
-     * C5 / L3: Do Not Disturb access — required to set RINGER_MODE_SILENT.
-     * Must be granted by the user via Settings > Apps > Special app access > DND.
-     * MediaActions.setSilentMode() checks this before attempting the ringer change.
-     */
     fun hasDndAccess(context: Context): Boolean {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         return nm.isNotificationPolicyAccessGranted
+    }
+
+    /**
+     * BLUETOOTH_CONNECT is a runtime permission introduced in API 31.
+     * Required on API 31-32 for: BluetoothAdapter.isEnabled, ACTION_REQUEST_ENABLE.
+     * Not needed on API 26-30 (covered by legacy BLUETOOTH permission).
+     * Not needed on API 33+ (ACTION_REQUEST_ENABLE is fully deprecated there).
+     *
+     * Cannot be added to REQUIRED because it must only be requested on API 31+.
+     * MediaActions.openBluetoothSettings() checks this before any Bluetooth call on API 31-32.
+     */
+    fun hasBluetoothConnect(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true  // not needed below API 31
+        return has(context, android.Manifest.permission.BLUETOOTH_CONNECT)
     }
 }

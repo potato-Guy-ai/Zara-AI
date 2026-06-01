@@ -9,28 +9,21 @@ import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.os.Build
 import android.provider.Settings
+import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.utils.ZaraLogger
 
 class MediaActions(private val context: Context) {
 
     private val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
-    /**
-     * C3 fix: WifiManager.setWifiEnabled() is a no-op on API 29+.
-     * On API 29+ open the Wi-Fi settings panel so the user controls the toggle.
-     * On API 26-28 (still supported by minSdk) use the deprecated API — it works there.
-     * Never report a state change we cannot verify.
-     */
     fun openWifiSettings(): String {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // API 29+: open the Quick Settings Wi-Fi panel
                 val intent = Intent(Settings.Panel.ACTION_WIFI)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(intent)
                 "Opening Wi-Fi settings."
             } else {
-                // API 26-28: deprecated but functional
                 val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(intent)
@@ -43,34 +36,79 @@ class MediaActions(private val context: Context) {
     }
 
     /**
-     * C4 fix: BluetoothAdapter.enable()/disable() require BLUETOOTH_PRIVILEGED
-     * on API 33+ and are silently ignored. Use the Android-approved approach:
-     * - API 33+: open Bluetooth settings panel.
-     * - API 26-32: use BluetoothAdapter.ACTION_REQUEST_ENABLE intent (user-approved).
-     * Never report a state change we cannot verify.
+     * Bluetooth handling by API level:
+     *
+     * API 33+ (TIRAMISU): ACTION_REQUEST_ENABLE requires BLUETOOTH_PRIVILEGED.
+     *   → Open Bluetooth settings directly. No permission needed.
+     *
+     * API 31-32 (S, S_V2): ACTION_REQUEST_ENABLE and adapter.isEnabled both
+     *   require BLUETOOTH_CONNECT runtime permission.
+     *   → Check permission first. If missing, guide user to app settings.
+     *   → If granted, launch ACTION_REQUEST_ENABLE.
+     *
+     * API 26-30: BLUETOOTH_CONNECT not required. Use ACTION_REQUEST_ENABLE directly.
+     *   adapter.isEnabled is safe without extra permission on these versions.
      */
     fun openBluetoothSettings(): String {
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // API 33+: open Bluetooth settings
-                val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
-                "Opening Bluetooth settings."
-            } else {
-                // API 26-32: system-managed enable request dialog
-                val adapter = BluetoothAdapter.getDefaultAdapter()
-                if (adapter == null) return "Bluetooth is not available on this device."
-                if (adapter.isEnabled) {
-                    val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                    "Bluetooth is already on. Opening Bluetooth settings."
-                } else {
-                    val intent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
-                    "Requesting Bluetooth enable."
+            when {
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                    // API 33+: settings only, no permission needed
+                    context.startActivity(
+                        Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                    "Opening Bluetooth settings."
+                }
+
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                    // API 31-32: BLUETOOTH_CONNECT is a runtime permission required
+                    // for both adapter.isEnabled and ACTION_REQUEST_ENABLE
+                    if (!PermissionManager.hasBluetoothConnect(context)) {
+                        // Guide user to grant it — cannot request from a Service/background context
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = android.net.Uri.parse("package:${context.packageName}")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                        )
+                        return "I need Bluetooth permission. Opening app settings."
+                    }
+                    // Permission granted — safe to check state and request enable
+                    val adapter = BluetoothAdapter.getDefaultAdapter()
+                        ?: return "Bluetooth is not available on this device."
+                    if (adapter.isEnabled) {
+                        context.startActivity(
+                            Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        "Bluetooth is already on. Opening Bluetooth settings."
+                    } else {
+                        context.startActivity(
+                            Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        "Requesting Bluetooth enable."
+                    }
+                }
+
+                else -> {
+                    // API 26-30: no BLUETOOTH_CONNECT needed
+                    val adapter = BluetoothAdapter.getDefaultAdapter()
+                        ?: return "Bluetooth is not available on this device."
+                    if (adapter.isEnabled) {
+                        context.startActivity(
+                            Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        "Bluetooth is already on. Opening Bluetooth settings."
+                    } else {
+                        context.startActivity(
+                            Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        "Requesting Bluetooth enable."
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -97,11 +135,6 @@ class MediaActions(private val context: Context) {
         return if (direction == "up") "Volume up." else "Volume down."
     }
 
-    /**
-     * C5 fix: setting RINGER_MODE_SILENT requires ACCESS_NOTIFICATION_POLICY
-     * on API 23+ or throws SecurityException. Check DND permission first.
-     * If not granted, open the DND settings so the user can grant it.
-     */
     fun setSilentMode(silent: Boolean): String {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (!nm.isNotificationPolicyAccessGranted) {
