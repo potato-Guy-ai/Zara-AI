@@ -203,8 +203,8 @@ class LocalIntentClassifier {
 
         // Extract contact + body via primary pattern
         reMsgVerb.find(t)?.let { m ->
-            val contact = m.groupValues[2].trim()
-            val body    = m.groupValues[3].trim()
+            val contact = m.groupValues[1].trim()
+            val body    = m.groupValues[2].trim()
             if (contact.isNotBlank()) {
                 return action(action, raw, target = contact,
                     extra = buildMap {
