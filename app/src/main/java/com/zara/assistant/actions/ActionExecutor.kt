@@ -21,10 +21,16 @@ class ActionExecutor(private val context: Context) {
                 IntentAction.END_CALL    -> callActions.endCall()
 
                 IntentAction.OPEN_APP    -> appActions.openApp(intent.target ?: return "Which app?")
-                IntentAction.SEND_SMS    -> appActions.sendSms(
+
+                IntentAction.SEND_SMS -> appActions.sendSms(
                     intent.target ?: return "Who should I message?",
-                    intent.extra[IntentExtra.BODY] ?: ""   // C1: use typed key, not raw string
+                    intent.extra[IntentExtra.BODY] ?: ""
                 )
+                IntentAction.SEND_WHATSAPP -> appActions.sendWhatsApp(
+                    intent.target ?: return "Who should I WhatsApp?",
+                    intent.extra[IntentExtra.BODY] ?: ""
+                )
+
                 IntentAction.OPEN_CAMERA -> appActions.openCamera()
                 IntentAction.SET_ALARM   -> appActions.openAlarm()
                 IntentAction.SET_TIMER   -> appActions.openAlarm()
@@ -35,8 +41,11 @@ class ActionExecutor(private val context: Context) {
                 IntentAction.SET_BLUETOOTH  -> mediaActions.openBluetoothSettings()
                 IntentAction.SET_FLASHLIGHT -> mediaActions.setFlashlight(intent.extra[IntentExtra.ON] == "true")
                 IntentAction.SET_VOLUME     -> mediaActions.adjustVolume(intent.extra[IntentExtra.DIRECTION] ?: "up")
-                IntentAction.SET_SILENT     -> mediaActions.setSilentMode(intent.extra[IntentExtra.ON] == "true")
-                IntentAction.LOCK_SCREEN    -> mediaActions.lockScreen()
+                IntentAction.SET_SILENT     -> mediaActions.setSilentMode(
+                    on   = intent.extra[IntentExtra.ON] == "true",
+                    mode = intent.extra[IntentExtra.MODE] ?: "silent"
+                )
+                IntentAction.LOCK_SCREEN -> mediaActions.lockScreen()
 
                 else -> "I don't know how to do '${intent.action}' yet."
             }

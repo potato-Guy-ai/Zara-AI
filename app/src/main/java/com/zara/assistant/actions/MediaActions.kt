@@ -19,53 +19,29 @@ class MediaActions(private val context: Context) {
     fun openWifiSettings(): String {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val intent = Intent(Settings.Panel.ACTION_WIFI)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
-                "Opening Wi-Fi settings."
+                context.startActivity(Intent(Settings.Panel.ACTION_WIFI)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             } else {
-                val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
-                "Opening Wi-Fi settings."
+                context.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }
+            "Opening Wi-Fi settings."
         } catch (e: Exception) {
             ZaraLogger.e("openWifiSettings error: ${e.message}")
             "Couldn't open Wi-Fi settings."
         }
     }
 
-    /**
-     * Bluetooth handling by API level:
-     *
-     * API 33+ (TIRAMISU): ACTION_REQUEST_ENABLE requires BLUETOOTH_PRIVILEGED.
-     *   → Open Bluetooth settings directly. No permission needed.
-     *
-     * API 31-32 (S, S_V2): ACTION_REQUEST_ENABLE and adapter.isEnabled both
-     *   require BLUETOOTH_CONNECT runtime permission.
-     *   → Check permission first. If missing, guide user to app settings.
-     *   → If granted, launch ACTION_REQUEST_ENABLE.
-     *
-     * API 26-30: BLUETOOTH_CONNECT not required. Use ACTION_REQUEST_ENABLE directly.
-     *   adapter.isEnabled is safe without extra permission on these versions.
-     */
     fun openBluetoothSettings(): String {
         return try {
             when {
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
-                    // API 33+: settings only, no permission needed
-                    context.startActivity(
-                        Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
+                    context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     "Opening Bluetooth settings."
                 }
-
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-                    // API 31-32: BLUETOOTH_CONNECT is a runtime permission required
-                    // for both adapter.isEnabled and ACTION_REQUEST_ENABLE
                     if (!PermissionManager.hasBluetoothConnect(context)) {
-                        // Guide user to grant it — cannot request from a Service/background context
                         context.startActivity(
                             Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
                                 data = android.net.Uri.parse("package:${context.packageName}")
@@ -74,39 +50,28 @@ class MediaActions(private val context: Context) {
                         )
                         return "I need Bluetooth permission. Opening app settings."
                     }
-                    // Permission granted — safe to check state and request enable
                     val adapter = BluetoothAdapter.getDefaultAdapter()
                         ?: return "Bluetooth is not available on this device."
                     if (adapter.isEnabled) {
-                        context.startActivity(
-                            Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
+                        context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                         "Bluetooth is already on. Opening Bluetooth settings."
                     } else {
-                        context.startActivity(
-                            Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
+                        context.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                         "Requesting Bluetooth enable."
                     }
                 }
-
                 else -> {
-                    // API 26-30: no BLUETOOTH_CONNECT needed
                     val adapter = BluetoothAdapter.getDefaultAdapter()
                         ?: return "Bluetooth is not available on this device."
                     if (adapter.isEnabled) {
-                        context.startActivity(
-                            Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
+                        context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                         "Bluetooth is already on. Opening Bluetooth settings."
                     } else {
-                        context.startActivity(
-                            Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
+                        context.startActivity(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                         "Requesting Bluetooth enable."
                     }
                 }
@@ -135,21 +100,40 @@ class MediaActions(private val context: Context) {
         return if (direction == "up") "Volume up." else "Volume down."
     }
 
-    fun setSilentMode(silent: Boolean): String {
+    /**
+     * Sound mode control — handles silent, vibrate, and normal/ring.
+     *
+     * [on]   true  = entering silent or vibrate
+     *        false = returning to normal/ring mode
+     * [mode] "silent"  → RINGER_MODE_SILENT
+     *        "vibrate" → RINGER_MODE_VIBRATE
+     *        "normal"  → RINGER_MODE_NORMAL
+     */
+    fun setSilentMode(on: Boolean, mode: String = "silent"): String {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (!nm.isNotificationPolicyAccessGranted) {
             return try {
-                val intent = Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
-                "I need Do Not Disturb permission to change silent mode. Opening settings."
+                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                "I need Do Not Disturb permission. Opening settings."
             } catch (e: Exception) {
-                "I need Do Not Disturb permission to change silent mode."
+                "I need Do Not Disturb permission to change sound mode."
             }
         }
-        audio.ringerMode = if (silent) AudioManager.RINGER_MODE_SILENT
-                           else AudioManager.RINGER_MODE_NORMAL
-        return if (silent) "Silent mode on." else "Ringer on."
+        return when {
+            !on || mode == "normal" -> {
+                audio.ringerMode = AudioManager.RINGER_MODE_NORMAL
+                "Ringer on."
+            }
+            mode == "vibrate" -> {
+                audio.ringerMode = AudioManager.RINGER_MODE_VIBRATE
+                "Vibrate mode on."
+            }
+            else -> {
+                audio.ringerMode = AudioManager.RINGER_MODE_SILENT
+                "Silent mode on."
+            }
+        }
     }
 
     fun lockScreen(): String {
