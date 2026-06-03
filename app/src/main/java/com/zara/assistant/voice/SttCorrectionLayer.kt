@@ -37,9 +37,10 @@ class SttCorrectionLayer {
         if (raw.isBlank()) return raw
         var result = raw.lowercase().trim()
 
-        // App name corrections
+        // App name corrections — word-boundary regex prevents expanding
+        // substrings inside already-correct words (e.g. "insta" inside "instagram").
         appCorrections.forEach { (wrong, right) ->
-            result = result.replace(wrong, right)
+            result = result.replace(Regex("(?<![\\w])${Regex.escape(wrong)}(?![\\w])"), right)
         }
 
         // Phonetic contact corrections (only in call/message context)
