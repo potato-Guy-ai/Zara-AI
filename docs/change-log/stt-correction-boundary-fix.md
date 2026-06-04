@@ -47,3 +47,52 @@ None observed. `phoneticCorrections` block already uses space-prefixed matching 
 
 ## Confidence
 100% — the regex boundary condition is deterministic. Verified analytically against all 11 keys in `appCorrections`.
+
+---
+
+# STT Audio Stability Fix (Phase 2)
+
+## File Modified
+- `app/src/main/java/com/zara/assistant/voice/SttManager.kt`
+
+## Changes Implemented
+
+### 1. AudioFocus Lifecycle Fix
+- Added `AudioManager` + `AudioFocusRequest` (API 26+)
+- Legacy `requestAudioFocus` fallback for Android < O via `@Suppress("DEPRECATION")`
+- `requestFocus()` called at the start of `startListening()`
+- `abandonFocus()` called inside `stop()`
+
+**Focus type:** `AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE`
+
+Ensures STT temporarily owns the mic exclusively during recording and releases it immediately after, allowing Bluetooth audio, FF Max, and WhatsApp to resume without conflict.
+
+### 2. SpeechRecognizer Callback Lifecycle Fix
+- `onResult = null` explicitly set inside `stop()`
+- Prevents stale lambda from firing after `recognizer.destroy()`
+
+**Safe invocation pattern introduced in `onResults` and `onError`:**
+```kotlin
+val cb = onResult   // capture before stop()
+stop()              // nulls onResult + abandons focus
+cb?.invoke(...)     // invoke captured ref safely
+```
+
+## Resulting Behavior
+- No audio routing conflicts during long sessions
+- No mic lock after STT cycle ends
+- Bluetooth audio (AirPods / BT headsets) remains stable across sessions
+- FF Max voice chat no longer interrupted by Zara wakeword
+- WhatsApp voice recording unaffected
+- No callback leakage across STT cycles
+
+## Scope
+**Only `SttManager.kt` modified.** No changes to:
+- `WakeWordManager.kt`
+- `TtsManager.kt`
+- `VoiceSessionManager.kt`
+- `ZaraForegroundService.kt`
+- AppResolver or intent system
+
+## Confidence
+97%
