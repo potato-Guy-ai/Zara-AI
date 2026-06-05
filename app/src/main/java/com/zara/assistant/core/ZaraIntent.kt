@@ -54,7 +54,7 @@ object IntentExtra {
     const val DIRECTION = "dir"
     const val BODY      = "body"
     const val DURATION  = "duration"
-    const val CHANNEL   = "channel"   // "sms" | "whatsapp"
+    const val CHANNEL   = "channel"   // "sms" | "whatsapp" | "telegram" | "signal" | "messenger" | "discord"
     const val MODE      = "mode"      // "silent" | "vibrate" | "normal"
 
     // ── Layer 4A slot namespace ────────────────────────────────────────────
@@ -67,9 +67,16 @@ object IntentExtra {
 
     // ── Layer 4B slot namespace ────────────────────────────────────────────
     const val CONTENT     = "content"     // media content (song/video title)
+
+    // ── Layer 4C slot namespace ────────────────────────────────────────────
+    const val RECIPIENT   = "recipient"   // normalized recipient name (mirrors target)
 }
 
 object ChannelType {
-    const val SMS      = "sms"
-    const val WHATSAPP = "whatsapp"
+    const val SMS       = "sms"
+    const val WHATSAPP  = "whatsapp"
+    const val TELEGRAM  = "telegram"
+    const val SIGNAL    = "signal"
+    const val MESSENGER = "messenger"
+    const val DISCORD   = "discord"
 }
