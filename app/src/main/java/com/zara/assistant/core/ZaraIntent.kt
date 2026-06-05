@@ -58,13 +58,15 @@ object IntentExtra {
     const val MODE      = "mode"      // "silent" | "vibrate" | "normal"
 
     // ── Layer 4A slot namespace ────────────────────────────────────────────
-    // Reserved keys for future slot extractors. Not populated in v1.
     const val APP         = "app"         // target application name
     const val SONG        = "song"        // song title
     const val ARTIST      = "artist"      // artist name
     const val TIME        = "time"        // time string (e.g. "7:30 AM")
     const val DESTINATION = "destination" // navigation destination
     const val QUERY       = "query"       // general search/query string
+
+    // ── Layer 4B slot namespace ────────────────────────────────────────────
+    const val CONTENT     = "content"     // media content (song/video title)
 }
 
 object ChannelType {

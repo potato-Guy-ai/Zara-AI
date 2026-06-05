@@ -2,8 +2,8 @@ package com.zara.assistant.actions
 
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.net.Uri
+import android.provider.AlarmClock
 import com.zara.assistant.utils.ZaraLogger
 
 class AppActions(private val context: Context) {
@@ -97,14 +97,56 @@ class AppActions(private val context: Context) {
 
     fun openAlarm(): String {
         return try {
-            context.startActivity(Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS)
+            context.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Opening clock."
         } catch (e: Exception) { "Couldn't open clock." }
     }
 
-    fun navigateTo(destination: String): String {
+    /** Layer 4B: set timer directly using AlarmClock intent with extracted duration in seconds. */
+    fun setTimer(seconds: Long): String {
         return try {
+            val intent = Intent(AlarmClock.ACTION_SET_TIMER).apply {
+                putExtra(AlarmClock.EXTRA_LENGTH, seconds.toInt())
+                putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            "Timer set for ${formatDuration(seconds)}."
+        } catch (e: Exception) {
+            ZaraLogger.e("setTimer: ${e.message}")
+            openAlarm()
+        }
+    }
+
+    private fun formatDuration(seconds: Long): String {
+        return when {
+            seconds % 3600 == 0L -> "${seconds / 3600} hour${if (seconds / 3600 > 1) "s" else ""}"
+            seconds % 60   == 0L -> "${seconds / 60} minute${if (seconds / 60 > 1) "s" else ""}"
+            else                 -> "$seconds seconds"
+        }
+    }
+
+    fun navigateTo(destination: String, preferredApp: String? = null): String {
+        return try {
+            // If a preferred app was extracted, try to deep-link into it.
+            if (preferredApp != null) {
+                val appLower = preferredApp.lowercase()
+                val uri = when {
+                    appLower.contains("google maps") || appLower.contains("maps") ->
+                        Uri.parse("google.navigation:q=${Uri.encode(destination)}")
+                    appLower.contains("waze") ->
+                        Uri.parse("waze://?q=${Uri.encode(destination)}&navigate=yes")
+                    else ->
+                        Uri.parse("geo:0,0?q=${Uri.encode(destination)}")
+                }
+                val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()) {
+                    context.startActivity(intent)
+                    return "Navigating to $destination on $preferredApp."
+                }
+            }
+            // Fallback: generic geo URI
             val uri = Uri.parse("geo:0,0?q=${Uri.encode(destination)}")
             context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Navigating to $destination."
@@ -114,21 +156,40 @@ class AppActions(private val context: Context) {
         }
     }
 
-    fun playMusic(query: String?): String {
+    /**
+     * Layer 4B: play music with optional content and app slot.
+     * app param routes to specific players if installed.
+     */
+    fun playMusic(query: String?, app: String? = null): String {
+        val appLower = app?.lowercase()
         return try {
-            val intent = if (query != null) {
-                val spotifyIntent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$query"))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (context.packageManager.queryIntentActivities(spotifyIntent, 0).isNotEmpty()) {
-                    context.startActivity(spotifyIntent)
-                    return "Playing $query on Spotify."
+            // Spotify
+            if (appLower == null || appLower.contains("spotify")) {
+                if (query != null) {
+                    val spotifyIntent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$query"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (context.packageManager.queryIntentActivities(spotifyIntent, 0).isNotEmpty()) {
+                        context.startActivity(spotifyIntent)
+                        return "Playing $query on Spotify."
+                    }
                 }
-                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MUSIC)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            } else {
-                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MUSIC)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+            // YouTube Music
+            if (appLower != null && (appLower.contains("youtube music") || appLower.contains("yt music"))) {
+                val cache = getAppCache()
+                val ytmPkg = cache["youtube music"] ?: cache["yt music"]
+                if (ytmPkg != null) {
+                    val intent = context.packageManager.getLaunchIntentForPackage(ytmPkg)
+                        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (intent != null) {
+                        context.startActivity(intent)
+                        return if (query != null) "Playing $query on YouTube Music." else "Opening YouTube Music."
+                    }
+                }
+            }
+            // Generic music app fallback
+            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MUSIC)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
             if (query != null) "Playing $query." else "Opening music."
         } catch (e: Exception) {

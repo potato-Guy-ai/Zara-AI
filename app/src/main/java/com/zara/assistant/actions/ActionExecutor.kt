@@ -33,9 +33,29 @@ class ActionExecutor(private val context: Context) {
 
                 IntentAction.OPEN_CAMERA -> appActions.openCamera()
                 IntentAction.SET_ALARM   -> appActions.openAlarm()
-                IntentAction.SET_TIMER   -> appActions.openAlarm()
-                IntentAction.NAVIGATE_TO -> appActions.navigateTo(intent.target ?: return "Where to?")
-                IntentAction.PLAY_MUSIC  -> appActions.playMusic(intent.target)
+
+                // Layer 4B: use DURATION slot if extracted, else open clock UI
+                IntentAction.SET_TIMER -> {
+                    val seconds = intent.extra[IntentExtra.DURATION]?.toLongOrNull()
+                    if (seconds != null) {
+                        appActions.setTimer(seconds)
+                    } else {
+                        appActions.openAlarm()
+                    }
+                }
+
+                // Layer 4B: use CONTENT + APP slots if extracted
+                IntentAction.PLAY_MUSIC -> {
+                    val content = intent.extra[IntentExtra.CONTENT]
+                    val app     = intent.extra[IntentExtra.APP]
+                    appActions.playMusic(content ?: intent.target, app)
+                }
+
+                IntentAction.NAVIGATE_TO -> {
+                    val dest = intent.extra[IntentExtra.QUERY] ?: intent.target
+                    val app  = intent.extra[IntentExtra.APP]
+                    appActions.navigateTo(dest ?: return "Where to?", app)
+                }
 
                 IntentAction.SET_WIFI       -> mediaActions.openWifiSettings()
                 IntentAction.SET_BLUETOOTH  -> mediaActions.openBluetoothSettings()
