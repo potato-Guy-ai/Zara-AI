@@ -49,12 +49,22 @@ object IntentAction {
 }
 
 object IntentExtra {
+    // ── Existing keys ──────────────────────────────────────────────────────
     const val ON        = "on"
     const val DIRECTION = "dir"
     const val BODY      = "body"
     const val DURATION  = "duration"
     const val CHANNEL   = "channel"   // "sms" | "whatsapp"
     const val MODE      = "mode"      // "silent" | "vibrate" | "normal"
+
+    // ── Layer 4A slot namespace ────────────────────────────────────────────
+    // Reserved keys for future slot extractors. Not populated in v1.
+    const val APP         = "app"         // target application name
+    const val SONG        = "song"        // song title
+    const val ARTIST      = "artist"      // artist name
+    const val TIME        = "time"        // time string (e.g. "7:30 AM")
+    const val DESTINATION = "destination" // navigation destination
+    const val QUERY       = "query"       // general search/query string
 }
 
 object ChannelType {

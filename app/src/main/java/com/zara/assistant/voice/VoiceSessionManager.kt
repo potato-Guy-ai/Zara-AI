@@ -3,6 +3,7 @@ package com.zara.assistant.voice
 import android.content.Context
 import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
+import com.zara.assistant.core.SlotExtractor
 import kotlinx.coroutines.*
 
 class VoiceSessionManager(private val context: Context) {
@@ -46,7 +47,7 @@ class VoiceSessionManager(private val context: Context) {
             }
             scope.launch {
                 val corrected = correctionLayer.correct(rawText)
-                val intent = classifier.classify(corrected)
+                val intent = SlotExtractor.extract(classifier.classify(corrected))
                 val response = intentRouter.route(intent)
                 ttsManager.speak(response) {
                     isListening = false
@@ -79,7 +80,7 @@ class VoiceSessionManager(private val context: Context) {
             }
             scope.launch {
                 val corrected = correctionLayer.correct(rawText)
-                val intent = classifier.classify(corrected)
+                val intent = SlotExtractor.extract(classifier.classify(corrected))
                 val response = intentRouter.route(intent)
                 isListening = false
                 wakeWordManager.resume()
@@ -95,7 +96,7 @@ class VoiceSessionManager(private val context: Context) {
     fun processText(text: String, onResponse: (String) -> Unit) {
         scope.launch {
             val corrected = correctionLayer.correct(text)
-            val intent = classifier.classify(corrected)
+            val intent = SlotExtractor.extract(classifier.classify(corrected))
             val response = intentRouter.route(intent)
             withContext(Dispatchers.Main) { onResponse(response) }
         }
