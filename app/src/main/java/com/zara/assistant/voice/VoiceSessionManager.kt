@@ -1,6 +1,7 @@
 package com.zara.assistant.voice
 
 import android.content.Context
+import com.zara.assistant.core.EntityResolver
 import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
 import com.zara.assistant.core.SlotExtractor
@@ -9,12 +10,13 @@ import kotlinx.coroutines.*
 class VoiceSessionManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private val sttManager = SttManager(context)
-    private val ttsManager = TtsManager(context)
+    private val sttManager      = SttManager(context)
+    private val ttsManager      = TtsManager(context)
     private val wakeWordManager = WakeWordManager(context)
     private val correctionLayer = SttCorrectionLayer()
-    private val intentRouter = IntentRouter(context)
-    private val classifier = LocalIntentClassifier()
+    private val intentRouter    = IntentRouter(context)
+    private val classifier      = LocalIntentClassifier()
+    private val entityResolver  = EntityResolver(context)
 
     var isListening = false
         private set
@@ -47,7 +49,7 @@ class VoiceSessionManager(private val context: Context) {
             }
             scope.launch {
                 val corrected = correctionLayer.correct(rawText)
-                val intent = SlotExtractor.extract(classifier.classify(corrected))
+                val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
                 val response = intentRouter.route(intent)
                 ttsManager.speak(response) {
                     isListening = false
@@ -57,12 +59,6 @@ class VoiceSessionManager(private val context: Context) {
         }
     }
 
-    /**
-     * CR-2 fix: entry point for manual STT activation from the UI mic button.
-     * Starts listening immediately without going through the wake word or classifier.
-     * STT result is corrected and classified exactly as the wake-word path does.
-     * onResponse is always invoked on the Main thread.
-     */
     fun startManualListening(onResponse: (String) -> Unit) {
         if (isListening) return
         isListening = true
@@ -80,7 +76,7 @@ class VoiceSessionManager(private val context: Context) {
             }
             scope.launch {
                 val corrected = correctionLayer.correct(rawText)
-                val intent = SlotExtractor.extract(classifier.classify(corrected))
+                val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
                 val response = intentRouter.route(intent)
                 isListening = false
                 wakeWordManager.resume()
@@ -89,14 +85,10 @@ class VoiceSessionManager(private val context: Context) {
         }
     }
 
-    /**
-     * Entry point for typed text input from the UI.
-     * onResponse is always invoked on the Main thread.
-     */
     fun processText(text: String, onResponse: (String) -> Unit) {
         scope.launch {
             val corrected = correctionLayer.correct(text)
-            val intent = SlotExtractor.extract(classifier.classify(corrected))
+            val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
             val response = intentRouter.route(intent)
             withContext(Dispatchers.Main) { onResponse(response) }
         }

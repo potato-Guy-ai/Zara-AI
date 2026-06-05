@@ -58,18 +58,27 @@ object IntentExtra {
     const val MODE      = "mode"      // "silent" | "vibrate" | "normal"
 
     // ── Layer 4A slot namespace ────────────────────────────────────────────
-    const val APP         = "app"         // target application name
-    const val SONG        = "song"        // song title
-    const val ARTIST      = "artist"      // artist name
-    const val TIME        = "time"        // time string (e.g. "7:30 AM")
-    const val DESTINATION = "destination" // navigation destination
-    const val QUERY       = "query"       // general search/query string
+    const val APP         = "app"
+    const val SONG        = "song"
+    const val ARTIST      = "artist"
+    const val TIME        = "time"
+    const val DESTINATION = "destination"
+    const val QUERY       = "query"
 
     // ── Layer 4B slot namespace ────────────────────────────────────────────
-    const val CONTENT     = "content"     // media content (song/video title)
+    const val CONTENT     = "content"
 
     // ── Layer 4C slot namespace ────────────────────────────────────────────
-    const val RECIPIENT   = "recipient"   // normalized recipient name (mirrors target)
+    const val RECIPIENT   = "recipient"
+
+    // ── Layer 5.1 entity resolution namespace ─────────────────────────────
+    const val CONTACT_NAME       = "contact_name"
+    const val PHONE_NUMBER       = "phone_number"
+    const val APP_PACKAGE        = "app_package"
+    const val APP_NAME           = "app_name"
+    const val ENTITY_CONFIDENCE  = "entity_confidence"
+    const val ENTITY_CANDIDATES  = "entity_candidates"  // pipe-separated list if ambiguous
+    const val NEEDS_CLARIFICATION = "needs_clarification" // "true" if multiple candidates
 }
 
 object ChannelType {
