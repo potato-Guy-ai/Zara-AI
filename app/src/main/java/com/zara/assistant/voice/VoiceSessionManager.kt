@@ -1,6 +1,7 @@
 package com.zara.assistant.voice
 
 import android.content.Context
+import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.EntityResolver
 import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
@@ -48,9 +49,7 @@ class VoiceSessionManager(private val context: Context) {
                 return@startListening
             }
             scope.launch {
-                val corrected = correctionLayer.correct(rawText)
-                val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
-                val response = intentRouter.route(intent)
+                val response = processInput(rawText)
                 ttsManager.speak(response) {
                     isListening = false
                     wakeWordManager.resume()
@@ -75,9 +74,7 @@ class VoiceSessionManager(private val context: Context) {
                 return@startListening
             }
             scope.launch {
-                val corrected = correctionLayer.correct(rawText)
-                val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
-                val response = intentRouter.route(intent)
+                val response = processInput(rawText)
                 isListening = false
                 wakeWordManager.resume()
                 withContext(Dispatchers.Main) { onResponse(response) }
@@ -87,10 +84,28 @@ class VoiceSessionManager(private val context: Context) {
 
     fun processText(text: String, onResponse: (String) -> Unit) {
         scope.launch {
-            val corrected = correctionLayer.correct(text)
-            val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
-            val response = intentRouter.route(intent)
+            val response = processInput(text)
             withContext(Dispatchers.Main) { onResponse(response) }
         }
+    }
+
+    /**
+     * Layer 5.3: Central input processor.
+     * 1. If clarification pending — attempt resolution first.
+     * 2. If expired or no pending — run normal pipeline.
+     */
+    private suspend fun processInput(rawText: String): String {
+        val corrected = correctionLayer.correct(rawText)
+
+        // Layer 5.3: clarification intercept
+        if (ClarificationManager.hasPending()) {
+            val clarificationResponse = intentRouter.tryResolveClarification(corrected)
+            if (clarificationResponse != null) return clarificationResponse
+            // null means expired — fall through to normal pipeline
+        }
+
+        // Normal pipeline
+        val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
+        return intentRouter.route(intent)
     }
 }

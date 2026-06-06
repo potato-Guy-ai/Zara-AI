@@ -8,7 +8,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * Central orchestrator — routes ZaraIntent to the correct handler.
- * Updated for C7: CloudReasoningClient.getInstance() takes no context argument.
+ * Layer 5.3: Clarification check inserted before normal routing.
  */
 class IntentRouter(private val context: Context) {
 
@@ -22,6 +22,33 @@ class IntentRouter(private val context: Context) {
             CONVERSATION -> conversationEngine.handle(intent)
             CLOUD        -> routeToCloud(intent)
             UNKNOWN      -> "I didn't understand that. Could you rephrase?"
+        }
+    }
+
+    /**
+     * Layer 5.3: Try clarification resolution before normal classification.
+     * Called by VoiceSessionManager with raw corrected text.
+     * Returns resolved response string if clarification handled, else null.
+     */
+    suspend fun tryResolveClarification(userText: String): String? = withContext(Dispatchers.Default) {
+        if (!ClarificationManager.hasPending()) return@withContext null
+
+        val resolved = ClarificationManager.resolve(userText)
+        return@withContext when {
+            resolved != null -> {
+                // Clarification succeeded — execute the rebuilt intent
+                actionExecutor.execute(resolved)
+            }
+            userText.trim().lowercase().let { t ->
+                t == "cancel" || t == "stop" || t == "never mind" || t == "nevermind"
+            } -> {
+                ClarificationManager.clear()
+                "Okay, cancelled."
+            }
+            else -> {
+                // Pending but unresolved — re-prompt
+                "I didn't catch that. Please say the name or number of your choice."
+            }
         }
     }
 
