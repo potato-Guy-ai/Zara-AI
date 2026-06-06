@@ -1,40 +1,30 @@
 package com.zara.assistant.core
 
 import android.content.Context
-import com.zara.assistant.actions.AppActions
 import com.zara.assistant.actions.ContactResolver
 import com.zara.assistant.actions.RuleBasedAppResolver
 import com.zara.assistant.utils.ZaraLogger
 
 /**
  * Layer 5.1 — Entity Resolution.
- *
- * Converts raw extracted slots into resolved real-world entities.
- * Runs after SlotExtractor, before IntentRouter.
+ * Layer 5.1.1 — resolve() and resolveContact() are now suspend functions
+ *               so ContactResolver.resolveAll() runs on Dispatchers.IO.
  *
  * - RECIPIENT → CONTACT_NAME + PHONE_NUMBER
  * - APP       → APP_PACKAGE  + APP_NAME
- *
- * Rules:
- * - Never overwrites intent.target
- * - Additive only (writes into extra)
- * - Deterministic, no ML, no network, no background threads
- * - Contact cache loaded once per instance
  */
 class EntityResolver(private val context: Context) {
 
     private val contactResolver = ContactResolver(context)
     private val appResolver     = RuleBasedAppResolver()
 
-    // Suffix tokens stripped before contact matching (safe, culture-aware)
     private val suffixes = setOf(
         "bro", "dude", "anna", "akka", "machi", "machan", "boss", "sis", "friend", "frnd"
     )
 
-    // App cache: loaded lazily, then reused
     @Volatile private var appCache: Map<String, String>? = null
 
-    fun resolve(intent: ZaraIntent): ZaraIntent {
+    suspend fun resolve(intent: ZaraIntent): ZaraIntent {
         var current = intent
         if (current.extra.containsKey(IntentExtra.RECIPIENT)) {
             current = resolveContact(current)
@@ -45,8 +35,8 @@ class EntityResolver(private val context: Context) {
         return current
     }
 
-    // ── Contact resolution ───────────────────────────────────────────────
-    private fun resolveContact(intent: ZaraIntent): ZaraIntent {
+    // ── Contact resolution (suspend — IO via ContactResolver) ────────────
+    private suspend fun resolveContact(intent: ZaraIntent): ZaraIntent {
         val raw = intent.extra[IntentExtra.RECIPIENT] ?: return intent
         val query = stripSuffix(raw.lowercase().trim())
 
@@ -63,14 +53,12 @@ class EntityResolver(private val context: Context) {
             newExtra[IntentExtra.PHONE_NUMBER]      = all[0].number
             newExtra[IntentExtra.ENTITY_CONFIDENCE] = "1.0"
         } else {
-            // Exact display name match wins
             val exact = all.firstOrNull { it.displayName.lowercase() == query }
             if (exact != null) {
                 newExtra[IntentExtra.CONTACT_NAME]      = exact.displayName
                 newExtra[IntentExtra.PHONE_NUMBER]      = exact.number
                 newExtra[IntentExtra.ENTITY_CONFIDENCE] = "1.0"
             } else {
-                // Multiple candidates — surface for clarification
                 newExtra[IntentExtra.NEEDS_CLARIFICATION] = "true"
                 newExtra[IntentExtra.ENTITY_CANDIDATES]   =
                     all.take(5).joinToString("|") { it.displayName }
@@ -80,7 +68,7 @@ class EntityResolver(private val context: Context) {
         return intent.copy(extra = newExtra)
     }
 
-    // ── App resolution ───────────────────────────────────────────────────
+    // ── App resolution (no IO needed — uses in-memory cache) ─────────────
     private fun resolveApp(intent: ZaraIntent): ZaraIntent {
         val appQuery = intent.extra[IntentExtra.APP] ?: return intent
         val cache = getAppCache()

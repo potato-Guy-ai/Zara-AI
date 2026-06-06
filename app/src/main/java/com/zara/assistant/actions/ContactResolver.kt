@@ -5,6 +5,8 @@ import android.content.Context
 import android.provider.ContactsContract
 import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.utils.ZaraLogger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Resolves a contact name or number string to a phone number.
@@ -16,6 +18,8 @@ import com.zara.assistant.utils.ZaraLogger
  * 3. Single match  → return number directly.
  * 4. Multiple matches → return first primary number (future: surface to user).
  * 5. No match → return null.
+ *
+ * Layer 5.1.1: All ContentResolver queries run on Dispatchers.IO.
  */
 class ContactResolver(private val context: Context) {
 
@@ -24,8 +28,8 @@ class ContactResolver(private val context: Context) {
         val number: String
     )
 
-    /** Returns a phone number or null. */
-    fun resolveNumber(input: String): String? {
+    /** Returns a phone number or null. Runs DB query on Dispatchers.IO. */
+    suspend fun resolveNumber(input: String): String? {
         val cleaned = input.filter { it.isDigit() || it == '+' }
         if (cleaned.length >= 7) return cleaned
 
@@ -39,16 +43,16 @@ class ContactResolver(private val context: Context) {
 
     /**
      * Returns all matching contacts for disambiguation.
-     * Callers can use this for multi-match UX in future phases.
+     * Runs DB query on Dispatchers.IO.
      */
-    fun resolveAll(input: String): List<ContactResult> {
+    suspend fun resolveAll(input: String): List<ContactResult> {
         val cleaned = input.filter { it.isDigit() || it == '+' }
         if (cleaned.length >= 7) return listOf(ContactResult(input, cleaned))
         if (!PermissionManager.has(context, android.Manifest.permission.READ_CONTACTS)) return emptyList()
         return queryContacts(input.trim())
     }
 
-    private fun queryContacts(name: String): List<ContactResult> {
+    private suspend fun queryContacts(name: String): List<ContactResult> = withContext(Dispatchers.IO) {
         val resolver: ContentResolver = context.contentResolver
         val uri = ContactsContract.CommonDataKinds.Phone.CONTENT_URI
         val projection = arrayOf(
@@ -60,7 +64,7 @@ class ContactResolver(private val context: Context) {
         val args = arrayOf("%$name%")
         val sort = "${ContactsContract.CommonDataKinds.Phone.IS_PRIMARY} DESC"
 
-        return try {
+        try {
             resolver.query(uri, projection, selection, args, sort)?.use { cursor ->
                 val results = mutableListOf<ContactResult>()
                 val nameIdx = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
