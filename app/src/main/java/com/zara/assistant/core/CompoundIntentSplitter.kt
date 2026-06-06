@@ -2,42 +2,59 @@ package com.zara.assistant.core
 
 /**
  * Layer 5.5 — Compound Intent Splitter.
- * Stateless, deterministic, O(n) string split only.
+ * Stateless, deterministic, O(n) string scan.
+ * Splits on: " and ", " then ", " after that ", "&"
+ * Respects quoted phrases (no split inside quotes).
  */
 object CompoundIntentSplitter {
 
-    private val DELIMITERS = listOf(" and ", " then ", " after that ", " & ")
+    private val DELIMITERS = listOf(" after that ", " then ", " and ", " & ", "&")
 
-    /**
-     * Split input into independent segments.
-     * Returns single-element list if no delimiter found or input is quoted.
-     */
     fun split(input: String): List<String> {
-        // Do not split quoted phrases
-        if (input.startsWith('"') && input.endsWith('"')) return listOf(input)
+        if (input.isBlank()) return listOf(input)
 
-        var remaining = input
+        // Skip splitting if entire input is quoted
+        val trimmed = input.trim()
+        if (trimmed.startsWith('"') && trimmed.endsWith('"')) return listOf(trimmed)
+
         val segments = mutableListOf<String>()
+        var remaining = trimmed
 
-        while (remaining.isNotEmpty()) {
-            val match = DELIMITERS
-                .mapNotNull { d ->
-                    val idx = remaining.indexOf(d, ignoreCase = true)
-                    if (idx >= 0) idx to d else null
+        outer@ while (remaining.isNotEmpty()) {
+            // Find earliest delimiter not inside quotes
+            var bestIdx = -1
+            var bestDelim = ""
+
+            for (delim in DELIMITERS) {
+                val idx = indexOfOutsideQuotes(remaining, delim)
+                if (idx >= 0 && (bestIdx < 0 || idx < bestIdx)) {
+                    bestIdx = idx
+                    bestDelim = delim
                 }
-                .minByOrNull { it.first }
+            }
 
-            if (match == null) {
+            if (bestIdx < 0) {
                 segments.add(remaining.trim())
                 break
             }
 
-            val (idx, delim) = match
-            val segment = remaining.substring(0, idx).trim()
-            if (segment.isNotEmpty()) segments.add(segment)
-            remaining = remaining.substring(idx + delim.length)
+            val before = remaining.substring(0, bestIdx).trim()
+            if (before.isNotEmpty()) segments.add(before)
+            remaining = remaining.substring(bestIdx + bestDelim.length)
         }
 
-        return if (segments.isEmpty()) listOf(input) else segments
+        return if (segments.isEmpty()) listOf(trimmed) else segments
+    }
+
+    private fun indexOfOutsideQuotes(text: String, delim: String): Int {
+        var inQuote = false
+        var i = 0
+        while (i <= text.length - delim.length) {
+            val ch = text[i]
+            if (ch == '"') { inQuote = !inQuote; i++; continue }
+            if (!inQuote && text.startsWith(delim, i)) return i
+            i++
+        }
+        return -1
     }
 }
