@@ -5,6 +5,7 @@ import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.EntityResolver
 import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
+import com.zara.assistant.core.PersonalContactResolver
 import com.zara.assistant.core.SlotExtractor
 import kotlinx.coroutines.*
 
@@ -90,9 +91,9 @@ class VoiceSessionManager(private val context: Context) {
     }
 
     /**
-     * Layer 5.3: Central input processor.
-     * 1. If clarification pending — attempt resolution first.
-     * 2. If expired or no pending — run normal pipeline.
+     * Central input processor.
+     * Layer 5.3: clarification intercept.
+     * Layer 5.4: PersonalContactResolver inserted before EntityResolver.
      */
     private suspend fun processInput(rawText: String): String {
         val corrected = correctionLayer.correct(rawText)
@@ -101,11 +102,13 @@ class VoiceSessionManager(private val context: Context) {
         if (ClarificationManager.hasPending()) {
             val clarificationResponse = intentRouter.tryResolveClarification(corrected)
             if (clarificationResponse != null) return clarificationResponse
-            // null means expired — fall through to normal pipeline
         }
 
-        // Normal pipeline
-        val intent = entityResolver.resolve(SlotExtractor.extract(classifier.classify(corrected)))
-        return intentRouter.route(intent)
+        // Normal pipeline: classify → slots → alias → entity → route
+        val classified = classifier.classify(corrected)
+        val slotted    = SlotExtractor.extract(classified)
+        val aliased    = PersonalContactResolver.resolve(slotted)  // Layer 5.4
+        val resolved   = entityResolver.resolve(aliased)
+        return intentRouter.route(resolved)
     }
 }
