@@ -10,16 +10,13 @@ class CallActions(private val context: Context) {
 
     private val contactResolver = ContactResolver(context)
 
-    fun call(contact: String): String {
+    // suspend: ContactResolver.resolveAll is suspend (Layer 5.1.1)
+    suspend fun call(contact: String): String {
         val results = contactResolver.resolveAll(contact)
         return when {
             results.isEmpty() -> openDiallerSearch(contact)
             results.size == 1 -> dialNumber(results[0].number, results[0].displayName)
-            else -> {
-                // Multiple matches: dial primary (first, sorted by IS_PRIMARY DESC)
-                // Future phase: surface list to user for selection
-                dialNumber(results[0].number, results[0].displayName)
-            }
+            else -> dialNumber(results[0].number, results[0].displayName)
         }
     }
 
