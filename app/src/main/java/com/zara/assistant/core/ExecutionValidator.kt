@@ -1,9 +1,7 @@
 package com.zara.assistant.core
 
-import com.zara.assistant.core.AppActionPlanner
-
 /**
- * Layer 5.7 — Validates a planned intent and produces an ExecutionContract.
+ * Layer 5.7 — Validates planned action and produces ExecutionContract.
  * Pure, stateless, no Android calls.
  */
 object ExecutionValidator {
@@ -13,29 +11,17 @@ object ExecutionValidator {
             AppActionPlanner.ACTION_CALL,
             AppActionPlanner.ACTION_AUDIO_CALL,
             AppActionPlanner.ACTION_VIDEO_CALL,
-            AppActionPlanner.ACTION_VOICE_MESSAGE -> {
+            AppActionPlanner.ACTION_VOICE_MESSAGE,
+            AppActionPlanner.ACTION_MESSAGE,
+            AppActionPlanner.ACTION_OPEN_CHAT -> {
                 val ok = !target.isNullOrBlank()
-                ok to if (!ok) "open_app" else null
+                Pair(ok, if (!ok) "open_app" else null)
             }
-            AppActionPlanner.ACTION_MESSAGE       -> {
-                val ok = !target.isNullOrBlank()
-                ok to if (!ok) "open_app" else null
-            }
-            AppActionPlanner.ACTION_SEARCH        -> {
+            AppActionPlanner.ACTION_SEARCH -> {
                 val ok = !query.isNullOrBlank()
-                ok to if (!ok) "open_app" else null
+                Pair(ok, if (!ok) "open_app" else null)
             }
-            AppActionPlanner.ACTION_PLAY,
-            AppActionPlanner.ACTION_PLAY_SONG,
-            AppActionPlanner.ACTION_PLAY_ARTIST,
-            AppActionPlanner.ACTION_PLAY_PLAYLIST -> true to null
-            AppActionPlanner.ACTION_OPEN_CHAT,
-            AppActionPlanner.ACTION_OPEN_VIDEO    -> true to null
-            "open_app"                            -> {
-                val ok = !app.isBlank()
-                ok to null
-            }
-            else -> true to null   // unknown — allow through, ActionExecutor handles
+            else -> Pair(true, null)
         }
         return ExecutionContract(
             safe           = safe,

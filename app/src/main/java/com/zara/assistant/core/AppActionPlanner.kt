@@ -1,30 +1,22 @@
 package com.zara.assistant.core
 
-import com.zara.assistant.core.IntentExtra
-import com.zara.assistant.core.ZaraIntent
-
 /**
  * Layer 5.6 — App Action Planner.
  * Pure rule-based, stateless, deterministic.
- * Enriches resolved intent with APP_PLAN slot.
- * Never re-resolves contacts or apps.
  */
 object AppActionPlanner {
 
-    // Keys stored in intent.extra
     const val KEY_APP    = "app_plan_app"
     const val KEY_ACTION = "app_plan_action"
     const val KEY_TARGET = "app_plan_target"
     const val KEY_QUERY  = "app_plan_query"
     const val KEY_MODE   = "app_plan_mode"
 
-    // App identifiers
     private const val APP_WHATSAPP = "whatsapp"
     private const val APP_YOUTUBE  = "youtube"
     private const val APP_PHONE    = "phone"
     private const val APP_MUSIC    = "music"
 
-    // Action identifiers
     const val ACTION_MESSAGE       = "message"
     const val ACTION_VOICE_MESSAGE = "voice_message"
     const val ACTION_VIDEO_CALL    = "video_call"
@@ -40,8 +32,7 @@ object AppActionPlanner {
 
     fun plan(intent: ZaraIntent): ZaraIntent {
         val raw = intent.rawText.lowercase()
-
-        val app = detectApp(raw, intent) ?: return intent  // unknown app — pass through
+        val app = detectApp(raw, intent) ?: return intent
 
         val action = detectAction(app, raw)
         val target = intent.extra[IntentExtra.CONTACT_NAME]
@@ -55,7 +46,6 @@ object AppActionPlanner {
         newExtra[KEY_ACTION] = action
         if (target != null) newExtra[KEY_TARGET] = target
         if (query  != null) newExtra[KEY_QUERY]  = query
-
         return intent.copy(extra = newExtra)
     }
 
@@ -88,8 +78,8 @@ object AppActionPlanner {
             raw.contains("open")   -> ACTION_OPEN_VIDEO
             else                   -> ACTION_SEARCH
         }
-        APP_PHONE    -> ACTION_CALL
-        APP_MUSIC    -> when {
+        APP_PHONE -> ACTION_CALL
+        APP_MUSIC -> when {
             raw.contains("artist")   -> ACTION_PLAY_ARTIST
             raw.contains("playlist") -> ACTION_PLAY_PLAYLIST
             else                     -> ACTION_PLAY_SONG

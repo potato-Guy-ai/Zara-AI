@@ -10,6 +10,7 @@ import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
 import com.zara.assistant.core.PersonalContactResolver
 import com.zara.assistant.core.SlotExtractor
+import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.*
 
 class VoiceSessionManager(private val context: Context) {
@@ -57,7 +58,9 @@ class VoiceSessionManager(private val context: Context) {
 
     private fun startListeningSession(onResponse: (String) -> Unit) {
         sttManager.startListening { rawText ->
-            if (rawText.isBlank()) { isListening = false; wakeWordManager.resume(); onResponse(""); return@startListening }
+            if (rawText.isBlank()) {
+                isListening = false; wakeWordManager.resume(); onResponse(""); return@startListening
+            }
             scope.launch {
                 val response = processInput(rawText)
                 isListening = false; wakeWordManager.resume()
@@ -84,7 +87,6 @@ class VoiceSessionManager(private val context: Context) {
         val segments = CompoundIntentSplitter.split(corrected)
         if (segments.size == 1) return runPipeline(segments[0])
 
-        // Compound: run each independently, collect results (failure isolation)
         val responses = mutableListOf<String>()
         for (segment in segments) {
             try {
@@ -92,23 +94,18 @@ class VoiceSessionManager(private val context: Context) {
             } catch (e: Exception) {
                 ZaraLogger.e("Segment failed: ${e.message}")
                 responses.add("Couldn't complete one of those actions.")
-                // 5.7: continue, do NOT break
             }
         }
         return responses.joinToString(". ")
     }
 
-    /**
-     * Full pipeline per segment:
-     * classify → slots → alias → entity → plan → guard → route
-     */
     private suspend fun runPipeline(text: String): String {
         val classified = classifier.classify(text)
         val slotted    = SlotExtractor.extract(classified)
         val aliased    = PersonalContactResolver.resolve(slotted)
         val resolved   = entityResolver.resolve(aliased)
         val planned    = AppActionPlanner.plan(resolved)
-        val guarded    = ExecutionGuard.guard(planned)   // Layer 5.7
+        val guarded    = ExecutionGuard.guard(planned)
         return intentRouter.route(guarded)
     }
 }
