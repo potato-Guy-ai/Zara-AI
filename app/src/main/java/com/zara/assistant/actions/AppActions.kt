@@ -25,13 +25,21 @@ class AppActions(private val context: Context) {
         return cache
     }
 
+    // ── App launch ────────────────────────────────────────────────────────
+
+    /** Layer 5.2: launch directly by resolved package — no duplicate resolution. */
+    fun launchByPackage(pkg: String, displayName: String?): String =
+        launchPackage(pkg, displayName ?: pkg)
+
+    /** Fallback: resolve by name then launch. */
     fun openApp(name: String): String {
-        val query = name.lowercase().trim()
-        val cache = getAppCache()
-        val result = resolver.resolve(query, cache)
+        val result = resolver.resolve(name.lowercase().trim(), getAppCache())
         return when {
             result.packageName != null -> launchPackage(result.packageName, result.displayLabel ?: name)
-            result.candidates.isNotEmpty() -> askClarification(name, result.candidates)
+            result.candidates.isNotEmpty() -> {
+                val list = result.candidates.take(5).mapIndexed { i, s -> "${i+1}. $s" }.joinToString(", ")
+                "Did you mean: $list?"
+            }
             else -> "I couldn't find an installed app called '$name'."
         }
     }
@@ -49,12 +57,8 @@ class AppActions(private val context: Context) {
         }
     }
 
-    private fun askClarification(query: String, matches: List<String>): String {
-        val list = matches.take(5).mapIndexed { i, s -> "${i+1}. $s" }.joinToString(", ")
-        return "Did you mean: $list?"
-    }
+    // ── SMS / WhatsApp ────────────────────────────────────────────────────
 
-    // suspend: ContactResolver.resolveNumber is suspend (Layer 5.1.1)
     suspend fun sendSms(contact: String, body: String): String {
         val number = ContactResolver(context).resolveNumber(contact)
         return try {
@@ -72,7 +76,6 @@ class AppActions(private val context: Context) {
         }
     }
 
-    // suspend: ContactResolver.resolveNumber is suspend (Layer 5.1.1)
     suspend fun sendWhatsApp(contact: String, body: String): String {
         val number = ContactResolver(context).resolveNumber(contact)
             ?: return "I couldn't find '$contact' in your contacts to WhatsApp."
@@ -88,18 +91,23 @@ class AppActions(private val context: Context) {
         }
     }
 
+    // ── Camera / Alarm / Timer ────────────────────────────────────────────
+
     fun openCamera(): String {
         return try {
-            context.startActivity(Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(
+                Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
             "Opening camera."
         } catch (e: Exception) { "Couldn't open camera." }
     }
 
     fun openAlarm(): String {
         return try {
-            context.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            context.startActivity(
+                Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
             "Opening clock."
         } catch (e: Exception) { "Couldn't open clock." }
     }
@@ -119,33 +127,45 @@ class AppActions(private val context: Context) {
         }
     }
 
-    private fun formatDuration(seconds: Long): String {
-        return when {
-            seconds % 3600 == 0L -> "${seconds / 3600} hour${if (seconds / 3600 > 1) "s" else ""}"
-            seconds % 60   == 0L -> "${seconds / 60} minute${if (seconds / 60 > 1) "s" else ""}"
-            else                 -> "$seconds seconds"
-        }
+    private fun formatDuration(seconds: Long): String = when {
+        seconds % 3600 == 0L -> "${seconds / 3600} hour${if (seconds / 3600 > 1) "s" else ""}"
+        seconds % 60   == 0L -> "${seconds / 60} minute${if (seconds / 60 > 1) "s" else ""}"
+        else                 -> "$seconds seconds"
     }
 
-    fun navigateTo(destination: String, preferredApp: String? = null): String {
+    // ── Navigation ────────────────────────────────────────────────────────
+
+    /**
+     * Layer 5.2: preferredPackage (resolved) takes priority over preferredApp (name).
+     * Falls back through: package → app name → generic geo URI.
+     */
+    fun navigateTo(
+        destination: String,
+        preferredPackage: String? = null,
+        preferredApp: String? = null
+    ): String {
         return try {
-            if (preferredApp != null) {
-                val appLower = preferredApp.lowercase()
-                val uri = when {
-                    appLower.contains("google maps") || appLower.contains("maps") ->
-                        Uri.parse("google.navigation:q=${Uri.encode(destination)}")
-                    appLower.contains("waze") ->
-                        Uri.parse("waze://?q=${Uri.encode(destination)}&navigate=yes")
-                    else -> Uri.parse("geo:0,0?q=${Uri.encode(destination)}")
-                }
-                val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()) {
-                    context.startActivity(intent)
-                    return "Navigating to $destination on $preferredApp."
-                }
+            // Build URI based on known app name/package
+            val appHint = preferredApp?.lowercase()
+            val uri = when {
+                preferredPackage == "com.google.android.apps.maps" ||
+                appHint?.contains("google maps") == true || appHint?.contains("maps") == true ->
+                    Uri.parse("google.navigation:q=${Uri.encode(destination)}")
+                preferredPackage == "com.waze" || appHint?.contains("waze") == true ->
+                    Uri.parse("waze://?q=${Uri.encode(destination)}&navigate=yes")
+                else -> Uri.parse("geo:0,0?q=${Uri.encode(destination)}")
             }
-            val uri = Uri.parse("geo:0,0?q=${Uri.encode(destination)}")
-            context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // If resolved package known, restrict to it
+            if (preferredPackage != null) intent.setPackage(preferredPackage)
+            if (context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()) {
+                context.startActivity(intent)
+                return "Navigating to $destination${if (preferredApp != null) " on $preferredApp" else ""}."
+            }
+            // Fallback: generic geo without package restriction
+            val fallback = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(destination)}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(fallback)
             "Navigating to $destination."
         } catch (e: Exception) {
             ZaraLogger.e("navigateTo: ${e.message}")
@@ -153,6 +173,39 @@ class AppActions(private val context: Context) {
         }
     }
 
+    // ── Music ─────────────────────────────────────────────────────────────
+
+    /**
+     * Layer 5.2: launch resolved package directly, then search within it if possible.
+     * Falls back to playMusic() if package can't handle the search URI.
+     */
+    fun playMusicByPackage(pkg: String, appName: String?, query: String?): String {
+        return try {
+            // Try deep-link search first (Spotify supports this)
+            if (query != null) {
+                val searchUri = when {
+                    pkg.contains("spotify") -> Uri.parse("spotify:search:$query")
+                    else -> null
+                }
+                if (searchUri != null) {
+                    val intent = Intent(Intent.ACTION_VIEW, searchUri)
+                        .setPackage(pkg)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()) {
+                        context.startActivity(intent)
+                        return "Playing $query on ${appName ?: pkg}."
+                    }
+                }
+            }
+            // Fallback: launch app directly
+            launchPackage(pkg, appName ?: pkg)
+        } catch (e: Exception) {
+            ZaraLogger.e("playMusicByPackage: ${e.message}")
+            playMusic(query, appName)
+        }
+    }
+
+    /** Fallback music play by app name. */
     fun playMusic(query: String?, app: String? = null): String {
         val appLower = app?.lowercase()
         return try {
@@ -167,8 +220,7 @@ class AppActions(private val context: Context) {
                 }
             }
             if (appLower != null && (appLower.contains("youtube music") || appLower.contains("yt music"))) {
-                val cache = getAppCache()
-                val ytmPkg = cache["youtube music"] ?: cache["yt music"]
+                val ytmPkg = getAppCache()["youtube music"] ?: getAppCache()["yt music"]
                 if (ytmPkg != null) {
                     val intent = context.packageManager.getLaunchIntentForPackage(ytmPkg)
                         ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
