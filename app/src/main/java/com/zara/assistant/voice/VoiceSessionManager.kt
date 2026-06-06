@@ -2,6 +2,7 @@ package com.zara.assistant.voice
 
 import android.content.Context
 import com.zara.assistant.core.ClarificationManager
+import com.zara.assistant.core.CompoundIntentSplitter
 import com.zara.assistant.core.EntityResolver
 import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
@@ -23,9 +24,7 @@ class VoiceSessionManager(private val context: Context) {
     var isListening = false
         private set
 
-    fun start() {
-        wakeWordManager.start { onWakeWordDetected() }
-    }
+    fun start() { wakeWordManager.start { onWakeWordDetected() } }
 
     fun stop() {
         wakeWordManager.stop()
@@ -44,17 +43,10 @@ class VoiceSessionManager(private val context: Context) {
 
     private fun startListeningSession() {
         sttManager.startListening { rawText ->
-            if (rawText.isBlank()) {
-                isListening = false
-                wakeWordManager.resume()
-                return@startListening
-            }
+            if (rawText.isBlank()) { isListening = false; wakeWordManager.resume(); return@startListening }
             scope.launch {
                 val response = processInput(rawText)
-                ttsManager.speak(response) {
-                    isListening = false
-                    wakeWordManager.resume()
-                }
+                ttsManager.speak(response) { isListening = false; wakeWordManager.resume() }
             }
         }
     }
@@ -69,10 +61,7 @@ class VoiceSessionManager(private val context: Context) {
     private fun startListeningSession(onResponse: (String) -> Unit) {
         sttManager.startListening { rawText ->
             if (rawText.isBlank()) {
-                isListening = false
-                wakeWordManager.resume()
-                onResponse("")
-                return@startListening
+                isListening = false; wakeWordManager.resume(); onResponse(""); return@startListening
             }
             scope.launch {
                 val response = processInput(rawText)
@@ -90,24 +79,36 @@ class VoiceSessionManager(private val context: Context) {
         }
     }
 
-    /**
-     * Central input processor.
-     * Layer 5.3: clarification intercept.
-     * Layer 5.4: PersonalContactResolver inserted before EntityResolver.
-     */
     private suspend fun processInput(rawText: String): String {
         val corrected = correctionLayer.correct(rawText)
 
         // Layer 5.3: clarification intercept
         if (ClarificationManager.hasPending()) {
-            val clarificationResponse = intentRouter.tryResolveClarification(corrected)
-            if (clarificationResponse != null) return clarificationResponse
+            val r = intentRouter.tryResolveClarification(corrected)
+            if (r != null) return r
         }
 
-        // Normal pipeline: classify → slots → alias → entity → route
-        val classified = classifier.classify(corrected)
+        // Layer 5.5: compound split
+        val segments = CompoundIntentSplitter.split(corrected)
+
+        if (segments.size == 1) {
+            return runPipeline(segments[0])
+        }
+
+        // Sequential execution — stop on first failure indicator
+        val responses = mutableListOf<String>()
+        for (segment in segments) {
+            val result = runPipeline(segment)
+            responses.add(result)
+            if (result.startsWith("I couldn't") || result.startsWith("Something went wrong")) break
+        }
+        return responses.joinToString(". ")
+    }
+
+    private suspend fun runPipeline(text: String): String {
+        val classified = classifier.classify(text)
         val slotted    = SlotExtractor.extract(classified)
-        val aliased    = PersonalContactResolver.resolve(slotted)  // Layer 5.4
+        val aliased    = PersonalContactResolver.resolve(slotted)
         val resolved   = entityResolver.resolve(aliased)
         return intentRouter.route(resolved)
     }
