@@ -1,6 +1,7 @@
 package com.zara.assistant.actions
 
 import android.content.Context
+import com.zara.assistant.core.AppActionPlanner
 import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.IntentAction
 import com.zara.assistant.core.IntentExtra
@@ -19,9 +20,14 @@ class ActionExecutor(private val context: Context) {
     suspend fun execute(intent: ZaraIntent): String {
         ZaraLogger.d("Executing: ${intent.action} target=${intent.target}")
 
-        // Layer 5.3: Store clarification and return prompt instead of blocking
         if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") {
             return handleClarificationNeeded(intent)
+        }
+
+        // Layer 5.6: if AppActionPlan present, execute from plan
+        val planApp = intent.extra[AppActionPlanner.KEY_APP]
+        if (planApp != null) {
+            return executePlan(intent, planApp)
         }
 
         return try {
@@ -90,41 +96,72 @@ class ActionExecutor(private val context: Context) {
         }
     }
 
-    // ── Clarification storage (Layer 5.3) ───────────────────────────────────
+    // ── Layer 5.6: plan-based execution ──────────────────────────────────────
+    private suspend fun executePlan(intent: ZaraIntent, app: String): String {
+        val action  = intent.extra[AppActionPlanner.KEY_ACTION] ?: return executeFallback(intent)
+        val target  = intent.extra[AppActionPlanner.KEY_TARGET]
+        val query   = intent.extra[AppActionPlanner.KEY_QUERY]
+        val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
+        val appName = intent.extra[IntentExtra.APP_NAME] ?: app
+
+        return try {
+            when (app) {
+                "whatsapp" -> when (action) {
+                    AppActionPlanner.ACTION_VOICE_MESSAGE -> appActions.sendWhatsApp(target ?: return "Who?", "")
+                    AppActionPlanner.ACTION_VIDEO_CALL    -> appActions.sendWhatsApp(target ?: return "Who?", "")
+                    AppActionPlanner.ACTION_AUDIO_CALL    -> appActions.sendWhatsApp(target ?: return "Who?", "")
+                    AppActionPlanner.ACTION_MESSAGE       -> appActions.sendWhatsApp(
+                        target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: ""
+                    )
+                    else -> if (pkg != null) appActions.launchByPackage(pkg, appName)
+                            else appActions.openApp("whatsapp")
+                }
+                "youtube" -> when (action) {
+                    AppActionPlanner.ACTION_SEARCH,
+                    AppActionPlanner.ACTION_PLAY,
+                    AppActionPlanner.ACTION_OPEN_VIDEO ->
+                        appActions.playMusic(query ?: target, "youtube")
+                    else -> if (pkg != null) appActions.launchByPackage(pkg, appName)
+                            else appActions.openApp("youtube")
+                }
+                "phone" -> callActions.call(target ?: return "Who should I call?")
+                "music"  -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target)
+                            else appActions.playMusic(query ?: target, appName)
+                else -> executeFallback(intent)
+            }
+        } catch (e: Exception) {
+            ZaraLogger.e("executePlan error: ${e.message}")
+            "Something went wrong."
+        }
+    }
+
+    private fun executeFallback(intent: ZaraIntent): String {
+        val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
+        val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP] ?: intent.target ?: return "Which app?"
+        return if (pkg != null) appActions.launchByPackage(pkg, appName)
+               else appActions.openApp(appName)
+    }
+
+    // ── Layer 5.3: clarification ───────────────────────────────────────────────────
     private fun handleClarificationNeeded(intent: ZaraIntent): String {
         val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]
             ?.split("|")
             ?.filter { it.isNotBlank() }
             ?: emptyList()
-
         if (rawCandidates.isEmpty()) return "I'm not sure who or what you mean."
-
-        // Determine entity type from action
         val entityType = when (intent.action) {
-            IntentAction.CALL,
-            IntentAction.SEND_SMS,
-            IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
-            else                       -> ClarificationEntityType.APP
+            IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
+            else -> ClarificationEntityType.APP
         }
-
-        // Build candidates — resolvedValue stored from existing slots if possible
-        // For multi-match, EntityResolver stored only display names in ENTITY_CANDIDATES.
-        // We store display name as resolvedValue placeholder; EntityResolver can be updated
-        // in a future phase to store full pairs. For now: displayName == resolvedValue
-        // for contacts (phone lookup deferred to post-clarification resolve).
-        // This is safe: CallActions.call() re-resolves by name when no PHONE_NUMBER present.
-        val candidatePairs = rawCandidates.map { it to it }
-
         val clarification = PendingClarification(
             clarificationId = UUID.randomUUID().toString(),
             originalIntent  = intent,
             entityType      = entityType,
-            candidates      = candidatePairs.map {
-                com.zara.assistant.models.ClarificationCandidate(it.first, it.second)
+            candidates      = rawCandidates.map {
+                com.zara.assistant.models.ClarificationCandidate(it, it)
             }
         )
         ClarificationManager.store(clarification)
-
         val list = rawCandidates.mapIndexed { i, s -> "${i+1}. $s" }.joinToString(", ")
         return "I found multiple matches: $list. Which one did you mean?"
     }

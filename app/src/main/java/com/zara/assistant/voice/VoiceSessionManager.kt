@@ -1,6 +1,7 @@
 package com.zara.assistant.voice
 
 import android.content.Context
+import com.zara.assistant.core.AppActionPlanner
 import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.CompoundIntentSplitter
 import com.zara.assistant.core.EntityResolver
@@ -27,11 +28,8 @@ class VoiceSessionManager(private val context: Context) {
     fun start() { wakeWordManager.start { onWakeWordDetected() } }
 
     fun stop() {
-        wakeWordManager.stop()
-        sttManager.stop()
-        ttsManager.stop()
-        isListening = false
-        scope.cancel()
+        wakeWordManager.stop(); sttManager.stop(); ttsManager.stop()
+        isListening = false; scope.cancel()
     }
 
     private fun onWakeWordDetected() {
@@ -53,8 +51,7 @@ class VoiceSessionManager(private val context: Context) {
 
     fun startManualListening(onResponse: (String) -> Unit) {
         if (isListening) return
-        isListening = true
-        wakeWordManager.pause()
+        isListening = true; wakeWordManager.pause()
         startListeningSession(onResponse)
     }
 
@@ -65,8 +62,7 @@ class VoiceSessionManager(private val context: Context) {
             }
             scope.launch {
                 val response = processInput(rawText)
-                isListening = false
-                wakeWordManager.resume()
+                isListening = false; wakeWordManager.resume()
                 withContext(Dispatchers.Main) { onResponse(response) }
             }
         }
@@ -82,20 +78,14 @@ class VoiceSessionManager(private val context: Context) {
     private suspend fun processInput(rawText: String): String {
         val corrected = correctionLayer.correct(rawText)
 
-        // Layer 5.3: clarification intercept
         if (ClarificationManager.hasPending()) {
             val r = intentRouter.tryResolveClarification(corrected)
             if (r != null) return r
         }
 
-        // Layer 5.5: compound split
         val segments = CompoundIntentSplitter.split(corrected)
+        if (segments.size == 1) return runPipeline(segments[0])
 
-        if (segments.size == 1) {
-            return runPipeline(segments[0])
-        }
-
-        // Sequential execution — stop on first failure indicator
         val responses = mutableListOf<String>()
         for (segment in segments) {
             val result = runPipeline(segment)
@@ -110,6 +100,7 @@ class VoiceSessionManager(private val context: Context) {
         val slotted    = SlotExtractor.extract(classified)
         val aliased    = PersonalContactResolver.resolve(slotted)
         val resolved   = entityResolver.resolve(aliased)
-        return intentRouter.route(resolved)
+        val planned    = AppActionPlanner.plan(resolved)   // Layer 5.6
+        return intentRouter.route(planned)
     }
 }
