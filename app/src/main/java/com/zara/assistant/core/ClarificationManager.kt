@@ -6,17 +6,22 @@ import com.zara.assistant.models.PendingClarification
 import java.util.UUID
 
 /**
- * Layer 5.3 + 5 Hardening — Clarification Manager.
+ * Layer 5.3 + 5 Hardening + Layer 6 Architecture Fix
  *
- * Fix: candidate identity is now stable.
- * Selection resolves by candidate index from stored list — NOT by re-matching display name after sort.
- * Numeric "1" always maps to candidates[0], "2" to candidates[1], etc.
- * Exact and contains match also operate on the immutable stored list.
+ * ClarificationManager is the SOLE clarification authority.
+ * Handles CONTACT, APP, and CONTEXT (Layer 6) entity types.
+ *
+ * For CONTEXT type:
+ *   resolvedContextText() returns the pending resolved text if user confirmed.
+ *   VoiceSessionManager checks this before running the normal pipeline.
  */
 object ClarificationManager {
 
     private var pending: PendingClarification? = null
     private val cancelWords = setOf("cancel", "stop", "never mind", "nevermind")
+
+    // Layer 6: holds resolved text after CONTEXT confirmation; read once then cleared
+    private var confirmedContextText: String? = null
 
     fun store(clarification: PendingClarification) { pending = clarification }
 
@@ -26,7 +31,18 @@ object ClarificationManager {
         return true
     }
 
-    fun clear() { pending = null }
+    fun clear() { pending = null; confirmedContextText = null }
+
+    /**
+     * Layer 6: returns confirmed resolved text and clears it (read-once).
+     * VoiceSessionManager checks this after ClarificationManager.resolve() returns null
+     * to detect CONTEXT confirmations.
+     */
+    fun popConfirmedContextText(): String? {
+        val t = confirmedContextText
+        confirmedContextText = null
+        return t
+    }
 
     fun resolve(userText: String): ZaraIntent? {
         val p = pending ?: return null
@@ -38,14 +54,33 @@ object ClarificationManager {
 
         pending = p.copy(attemptCount = p.attemptCount + 1)
 
-        // HARDENING FIX: resolve against STORED ordered list — identity preserved
-        val storedCandidates = p.candidates  // immutable order
+        // CONTEXT type: yes/no confirmation for Layer 6
+        if (p.entityType == ClarificationEntityType.CONTEXT) {
+            val yesWords = setOf("yes", "yeah", "yep", "sure", "ok", "okay", "correct", "right")
+            return when {
+                yesWords.any { trimmed == it || trimmed.startsWith("$it ") } -> {
+                    val resolved = p.candidates.firstOrNull()?.resolvedValue
+                    pending = null
+                    if (resolved != null) {
+                        confirmedContextText = resolved
+                    }
+                    null  // VoiceSessionManager checks popConfirmedContextText()
+                }
+                cancelWords.any { trimmed.contains(it) } -> {
+                    pending = null; null
+                }
+                else -> {
+                    // Not a confirmation — abandon context clarification, treat as new command
+                    pending = null; null
+                }
+            }
+        }
+
+        // CONTACT / APP: existing logic
+        val storedCandidates = p.candidates
 
         val selected: ClarificationCandidate? = when {
-            trimmed.matches(Regex("\\d+")) -> {
-                val idx = trimmed.toInt() - 1
-                storedCandidates.getOrNull(idx)   // exact index — never re-sorted
-            }
+            trimmed.matches(Regex("\\d+")) -> storedCandidates.getOrNull(trimmed.toInt() - 1)
             storedCandidates.any { ContactNormalizer.normalize(it.displayName) == trimmed } ->
                 storedCandidates.first { ContactNormalizer.normalize(it.displayName) == trimmed }
             storedCandidates.any { ContactNormalizer.normalize(it.displayName).contains(trimmed) } ->
@@ -62,7 +97,7 @@ object ClarificationManager {
         when (p.entityType) {
             ClarificationEntityType.CONTACT -> {
                 newExtra[IntentExtra.CONTACT_NAME]      = selected.displayName
-                newExtra[IntentExtra.PHONE_NUMBER]      = selected.resolvedValue  // stable phone stored at creation
+                newExtra[IntentExtra.PHONE_NUMBER]      = selected.resolvedValue
                 newExtra[IntentExtra.ENTITY_CONFIDENCE] = selected.confidence.toString()
             }
             ClarificationEntityType.APP -> {
@@ -70,6 +105,7 @@ object ClarificationManager {
                 newExtra[IntentExtra.APP_NAME]          = selected.displayName
                 newExtra[IntentExtra.ENTITY_CONFIDENCE] = selected.confidence.toString()
             }
+            ClarificationEntityType.CONTEXT -> { /* handled above */ }
         }
 
         ExecutionTelemetry.record(

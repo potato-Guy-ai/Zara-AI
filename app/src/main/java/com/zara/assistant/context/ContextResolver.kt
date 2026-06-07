@@ -1,5 +1,6 @@
 package com.zara.assistant.context
 
+import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
 import com.zara.assistant.models.ClarificationCandidate
@@ -8,20 +9,17 @@ import com.zara.assistant.models.PendingClarification
 import java.util.UUID
 
 /**
- * Layer 6.0 + Critical Fixes
+ * Layer 6.0 + Critical Architecture Fixes
  *
- * FIX 1: ContextResolver now operates on raw corrected TEXT before classification.
- *   - Input:  corrected string (e.g. "call him")
- *   - Output: TextResult
- *     - ResolvedText: rewritten string (e.g. "call Abdul Rahman") → classify once
- *     - Prompt:       return message to user, do NOT classify
- *     - NoContext:    pass original text through unchanged
+ * ARCHITECTURE FIX:
+ *   pendingContextText REMOVED.
+ *   MEDIUM confidence now uses ClarificationManager (sole clarification authority).
+ *   PendingClarification with entityType=CONTEXT stores the resolved text as resolvedValue.
+ *   ClarificationManager.popConfirmedContextText() returns it after user confirms.
+ *   Timeout inherited from PendingClarification.TIMEOUT_MS (30s). No second timeout.
  *
- * FIX 2: MEDIUM confidence stores a PendingClarification via ClarificationManager.
- *   "yes" → resolves, runs original rewritten text.
- *   "no"  → clears clarification, normal pipeline.
- *
- * Safety: context NEVER used for destructive actions.
+ * ContextResolver operates on TEXT before classification (no pre-classified intent needed).
+ * Returns TextResult: ResolvedText | Prompt | NoContext.
  */
 object ContextResolver {
 
@@ -41,121 +39,96 @@ object ContextResolver {
         "transfer", "install", "uninstall", "settings"
     )
 
-    // Yes/no confirmation words for MEDIUM clarification
-    private val YES_WORDS = setOf("yes", "yeah", "yep", "sure", "ok", "okay", "correct", "right")
-    private val NO_WORDS  = setOf("no", "nope", "cancel", "stop", "never mind", "nevermind")
-
-    // Pending context confirmation (MEDIUM fix 2)
-    // Stores: resolved text to execute if user says yes
-    private var pendingContextText: String? = null
-
     sealed class TextResult {
-        /** Use this rewritten text for classification — single pass */
+        /** Resolved text — classify once and run pipeline */
         data class ResolvedText(val text: String) : TextResult()
-        /** Return this message to user; do NOT classify */
+        /** Return to user; do NOT classify */
         data class Prompt(val message: String) : TextResult()
-        /** No pronoun detected or context unsafe — pass through original */
+        /** No pronoun or context unsafe — pass through unchanged */
         data class NoContext(val text: String) : TextResult()
     }
 
-    /**
-     * FIX 1: Operates on text BEFORE classification.
-     * Returns TextResult. Caller classifies only if ResolvedText or NoContext.
-     */
     fun resolve(corrected: String): TextResult {
         val lower = corrected.lowercase().trim()
-
-        // Check for pending MEDIUM context confirmation (FIX 2)
-        if (pendingContextText != null) {
-            return when {
-                YES_WORDS.any { lower == it || lower.startsWith("$it ") } -> {
-                    val resolved = pendingContextText!!
-                    pendingContextText = null
-                    TextResult.ResolvedText(resolved)
-                }
-                NO_WORDS.any { lower == it || lower.startsWith("$it ") } -> {
-                    pendingContextText = null
-                    TextResult.NoContext(corrected)
-                }
-                else -> {
-                    // Not a confirmation — abandon pending and continue normally
-                    pendingContextText = null
-                    resolveFromContext(lower, corrected)
-                }
-            }
-        }
-
-        return resolveFromContext(lower, corrected)
+        if (UNSAFE_ACTIONS.any { lower.contains(it) }) return TextResult.NoContext(corrected)
+        if (PERSON_PRONOUNS.any { lower.contains(it) }) return resolvePersonText(lower, corrected)
+        if (APP_PRONOUNS.any { lower.contains(it) })    return resolveAppText(lower, corrected)
+        if (MEDIA_PRONOUNS.any { lower.contains(it) })  return resolveMediaText(lower, corrected)
+        return TextResult.NoContext(corrected)
     }
 
-    private fun resolveFromContext(lower: String, original: String): TextResult {
-        if (UNSAFE_ACTIONS.any { lower.contains(it) }) return TextResult.NoContext(original)
-
-        if (PERSON_PRONOUNS.any { lower.contains(it) }) return resolvePersonText(lower, original)
-        if (APP_PRONOUNS.any { lower.contains(it) })    return resolveAppText(lower, original)
-        if (MEDIA_PRONOUNS.any { lower.contains(it) })  return resolveMediaText(lower, original)
-
-        return TextResult.NoContext(original)
-    }
-
-    // ── Person ─────────────────────────────────────────────────────────────
     private fun resolvePersonText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastPerson()
             ?: return TextResult.Prompt("I no longer know who you're referring to. Who would you like to contact?")
-
         if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
-
-        // Replace pronoun with real name in the original text
         val resolved = replacePronoun(original, PERSON_PRONOUNS, ctx.contactName)
-
         return if (ctx.confidence == ContextConfidence.HIGH) {
             TextResult.ResolvedText(resolved)
         } else {
-            // MEDIUM: FIX 2 - store pending and return confirmation prompt
-            pendingContextText = resolved
+            // MEDIUM: delegate to ClarificationManager (sole authority)
+            storeMediumClarification(original, resolved, ctx.contactName)
             TextResult.Prompt("Did you mean ${ctx.contactName}? Say yes or no.")
         }
     }
 
-    // ── App ──────────────────────────────────────────────────────────────
     private fun resolveAppText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastApp()
             ?: return TextResult.Prompt("I no longer know which app you mean. Which app?")
-
         if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
-
         val resolved = replacePronoun(original, APP_PRONOUNS, ctx.appName)
-
         return if (ctx.confidence == ContextConfidence.HIGH) {
             TextResult.ResolvedText(resolved)
         } else {
-            pendingContextText = resolved
+            storeMediumClarification(original, resolved, ctx.appName)
             TextResult.Prompt("Did you mean ${ctx.appName}? Say yes or no.")
         }
     }
 
-    // ── Media ─────────────────────────────────────────────────────────────
     private fun resolveMediaText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastMedia()
             ?: return TextResult.Prompt("I no longer know which media you mean. What would you like to play?")
-
         if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
-
-        val name = ctx.song ?: ctx.artist ?: ctx.video ?: ctx.playlist ?: return TextResult.NoContext(original)
+        val name = ctx.song ?: ctx.artist ?: ctx.video ?: ctx.playlist
+            ?: return TextResult.NoContext(original)
         val resolved = replacePronoun(original, MEDIA_PRONOUNS, name)
-
         return if (ctx.confidence == ContextConfidence.HIGH) {
             TextResult.ResolvedText(resolved)
         } else {
-            pendingContextText = resolved
+            storeMediumClarification(original, resolved, name)
             TextResult.Prompt("Did you mean $name? Say yes or no.")
         }
     }
 
-    // ── Pronoun replacement ────────────────────────────────────────────────
+    /**
+     * MEDIUM confidence: stores a CONTEXT-type PendingClarification in ClarificationManager.
+     * resolvedValue = resolved text to classify if user confirms.
+     * Timeout inherited from PendingClarification.TIMEOUT_MS (30s).
+     */
+    private fun storeMediumClarification(originalText: String, resolvedText: String, entityName: String) {
+        // Use a minimal ZaraIntent as placeholder (rawText carries the original input)
+        val placeholder = ZaraIntent(
+            type      = com.zara.assistant.core.IntentType.UNKNOWN,
+            action    = com.zara.assistant.core.IntentAction.UNKNOWN,
+            rawText   = originalText
+        )
+        ClarificationManager.store(
+            PendingClarification(
+                clarificationId = UUID.randomUUID().toString(),
+                originalIntent  = placeholder,
+                entityType      = ClarificationEntityType.CONTEXT,
+                candidates      = listOf(
+                    ClarificationCandidate(
+                        displayName   = entityName,
+                        resolvedValue = resolvedText,  // text to re-classify on confirmation
+                        confidence    = 0.65f
+                    )
+                )
+            )
+        )
+    }
+
     private fun replacePronoun(original: String, pronouns: Set<String>, replacement: String): String {
         var result = original
-        // Replace longest match first to avoid partial replacements
         for (pronoun in pronouns.sortedByDescending { it.length }) {
             val idx = result.lowercase().indexOf(pronoun)
             if (idx >= 0) {
@@ -165,7 +138,4 @@ object ContextResolver {
         }
         return result
     }
-
-    /** Clear any pending medium context (e.g. on session end). */
-    fun clearPending() { pendingContextText = null }
 }

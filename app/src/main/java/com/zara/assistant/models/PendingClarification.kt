@@ -3,16 +3,20 @@ package com.zara.assistant.models
 import com.zara.assistant.core.ZaraIntent
 
 /**
- * Layer 5.3 — Holds one active clarification session.
- * Session-only. No persistence. No disk.
+ * Layer 5.3 / 6 — Clarification model.
+ * Session-only. No persistence.
  */
 data class ClarificationCandidate(
     val displayName: String,
-    val resolvedValue: String,  // phone number for contacts, package name for apps
+    val resolvedValue: String,  // phone for contacts, package for apps, resolved text for CONTEXT
     val confidence: Float = 1.0f
 )
 
-enum class ClarificationEntityType { CONTACT, APP }
+enum class ClarificationEntityType {
+    CONTACT,
+    APP,
+    CONTEXT   // Layer 6: context confirmation (resolvedValue = rewritten text to classify)
+}
 
 data class PendingClarification(
     val clarificationId: String,
@@ -26,6 +30,5 @@ data class PendingClarification(
     companion object {
         const val TIMEOUT_MS = 30_000L
     }
-
     fun isExpired(): Boolean = System.currentTimeMillis() > expiresAt
 }

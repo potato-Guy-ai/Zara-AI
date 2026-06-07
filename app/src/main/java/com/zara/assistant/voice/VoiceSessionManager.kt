@@ -81,10 +81,32 @@ class VoiceSessionManager(private val context: Context) {
     private suspend fun processInput(rawText: String): String {
         val corrected = correctionLayer.correct(rawText)
 
-        // Layer 5.3: clarification check
+        // Layer 5.3 / Layer 6: ClarificationManager check (sole clarification authority)
         if (ClarificationManager.hasPending()) {
-            val r = intentRouter.tryResolveClarification(corrected)
-            if (r != null) return r
+            // Run resolve — for CONTACT/APP returns rebuilt intent; for CONTEXT sets confirmedContextText
+            val resolvedIntent = ClarificationManager.resolve(corrected)
+
+            // Layer 6 CONTEXT confirmation: check if context text was confirmed
+            val confirmedText = ClarificationManager.popConfirmedContextText()
+            if (confirmedText != null) {
+                return runPipelineOnText(confirmedText)
+            }
+
+            if (resolvedIntent != null) {
+                // CONTACT/APP clarification resolved — execute directly
+                return intentRouter.route(resolvedIntent)
+            }
+
+            val lower = corrected.trim().lowercase()
+            if (lower == "cancel" || lower == "stop" || lower == "never mind" || lower == "nevermind") {
+                ClarificationManager.clear()
+                return "Okay, cancelled."
+            }
+
+            if (ClarificationManager.hasPending()) {
+                return "I didn't catch that. Please say the name or number of your choice."
+            }
+            // Clarification expired or abandoned — fall through to normal pipeline
         }
 
         val segments = CompoundIntentSplitter.split(corrected)
@@ -101,25 +123,11 @@ class VoiceSessionManager(private val context: Context) {
         return responses.joinToString(". ")
     }
 
-    /**
-     * FIX 1: ContextResolver runs on TEXT before classification.
-     * - ResolvedText → classify the rewritten text once, run pipeline
-     * - Prompt       → return to user, no classification
-     * - NoContext     → classify original text, run pipeline
-     * No duplicate classification, no second pass, no recursion.
-     */
     private suspend fun runPipeline(text: String): String {
         return when (val ctxResult = ContextResolver.resolve(text)) {
-            is ContextResolver.TextResult.Prompt ->
-                ctxResult.message
-
-            is ContextResolver.TextResult.ResolvedText -> {
-                // Classify ONCE on resolved text
-                runPipelineOnText(ctxResult.text)
-            }
-
-            is ContextResolver.TextResult.NoContext ->
-                runPipelineOnText(ctxResult.text)
+            is ContextResolver.TextResult.Prompt       -> ctxResult.message
+            is ContextResolver.TextResult.ResolvedText -> runPipelineOnText(ctxResult.text)
+            is ContextResolver.TextResult.NoContext    -> runPipelineOnText(ctxResult.text)
         }
     }
 
