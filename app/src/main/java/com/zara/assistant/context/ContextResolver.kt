@@ -2,139 +2,170 @@ package com.zara.assistant.context
 
 import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
+import com.zara.assistant.models.ClarificationCandidate
+import com.zara.assistant.models.ClarificationEntityType
+import com.zara.assistant.models.PendingClarification
+import java.util.UUID
 
 /**
- * Layer 6.0 — Context Resolver.
+ * Layer 6.0 + Critical Fixes
  *
- * Resolves pronoun/reference tokens in rawText BEFORE classification.
- * Returns a new ZaraIntent with extra slots pre-filled from context,
- * or a string prompt if context expired.
+ * FIX 1: ContextResolver now operates on raw corrected TEXT before classification.
+ *   - Input:  corrected string (e.g. "call him")
+ *   - Output: TextResult
+ *     - ResolvedText: rewritten string (e.g. "call Abdul Rahman") → classify once
+ *     - Prompt:       return message to user, do NOT classify
+ *     - NoContext:    pass original text through unchanged
  *
- * Safety: context is NEVER used for destructive actions.
+ * FIX 2: MEDIUM confidence stores a PendingClarification via ClarificationManager.
+ *   "yes" → resolves, runs original rewritten text.
+ *   "no"  → clears clarification, normal pipeline.
+ *
+ * Safety: context NEVER used for destructive actions.
  */
 object ContextResolver {
 
-    // Pronouns that reference a person
     private val PERSON_PRONOUNS = setOf(
         "him", "her", "them", "that person", "that contact",
         "same person", "another message to him", "another message to her"
     )
-    // Pronouns that reference an app
     private val APP_PRONOUNS = setOf(
         "that app", "same app", "search there", "open it", "continue there"
     )
-    // Pronouns that reference media
     private val MEDIA_PRONOUNS = setOf(
         "that song", "that video", "that one", "another one",
         "same song", "same video", "play next one", "play another", "same artist"
     )
-    // Destructive actions — context NEVER applied
     private val UNSAFE_ACTIONS = setOf(
         "delete", "format", "reset", "payment", "pay",
         "transfer", "install", "uninstall", "settings"
     )
 
-    /**
-     * Result sealed class:
-     * - Resolved: enriched ZaraIntent ready for pipeline
-     * - ExpiredPrompt: context was found but expired — return string to user
-     * - NoContext: no pronoun detected or no stored context — pass through unchanged
-     */
-    sealed class ContextResult {
-        data class Resolved(val intent: ZaraIntent) : ContextResult()
-        data class ExpiredPrompt(val message: String) : ContextResult()
-        data class NoContext(val originalText: String) : ContextResult()
+    // Yes/no confirmation words for MEDIUM clarification
+    private val YES_WORDS = setOf("yes", "yeah", "yep", "sure", "ok", "okay", "correct", "right")
+    private val NO_WORDS  = setOf("no", "nope", "cancel", "stop", "never mind", "nevermind")
+
+    // Pending context confirmation (MEDIUM fix 2)
+    // Stores: resolved text to execute if user says yes
+    private var pendingContextText: String? = null
+
+    sealed class TextResult {
+        /** Use this rewritten text for classification — single pass */
+        data class ResolvedText(val text: String) : TextResult()
+        /** Return this message to user; do NOT classify */
+        data class Prompt(val message: String) : TextResult()
+        /** No pronoun detected or context unsafe — pass through original */
+        data class NoContext(val text: String) : TextResult()
     }
 
     /**
-     * Attempt to resolve pronouns/references in corrected text.
-     * The intent is a pre-classified placeholder with rawText = corrected.
-     * Returns ContextResult.
+     * FIX 1: Operates on text BEFORE classification.
+     * Returns TextResult. Caller classifies only if ResolvedText or NoContext.
      */
-    fun resolve(corrected: String, intent: ZaraIntent): ContextResult {
+    fun resolve(corrected: String): TextResult {
         val lower = corrected.lowercase().trim()
 
-        // Safety: never use context for destructive actions
-        if (UNSAFE_ACTIONS.any { lower.contains(it) }) return ContextResult.NoContext(corrected)
-
-        // Person pronoun
-        if (PERSON_PRONOUNS.any { lower.contains(it) }) {
-            return resolvePersonContext(lower, intent)
+        // Check for pending MEDIUM context confirmation (FIX 2)
+        if (pendingContextText != null) {
+            return when {
+                YES_WORDS.any { lower == it || lower.startsWith("$it ") } -> {
+                    val resolved = pendingContextText!!
+                    pendingContextText = null
+                    TextResult.ResolvedText(resolved)
+                }
+                NO_WORDS.any { lower == it || lower.startsWith("$it ") } -> {
+                    pendingContextText = null
+                    TextResult.NoContext(corrected)
+                }
+                else -> {
+                    // Not a confirmation — abandon pending and continue normally
+                    pendingContextText = null
+                    resolveFromContext(lower, corrected)
+                }
+            }
         }
 
-        // App pronoun
-        if (APP_PRONOUNS.any { lower.contains(it) }) {
-            return resolveAppContext(lower, intent)
-        }
-
-        // Media pronoun
-        if (MEDIA_PRONOUNS.any { lower.contains(it) }) {
-            return resolveMediaContext(lower, intent)
-        }
-
-        return ContextResult.NoContext(corrected)
+        return resolveFromContext(lower, corrected)
     }
 
-    // ── Person resolution ────────────────────────────────────────────
+    private fun resolveFromContext(lower: String, original: String): TextResult {
+        if (UNSAFE_ACTIONS.any { lower.contains(it) }) return TextResult.NoContext(original)
 
-    private fun resolvePersonContext(lower: String, intent: ZaraIntent): ContextResult {
+        if (PERSON_PRONOUNS.any { lower.contains(it) }) return resolvePersonText(lower, original)
+        if (APP_PRONOUNS.any { lower.contains(it) })    return resolveAppText(lower, original)
+        if (MEDIA_PRONOUNS.any { lower.contains(it) })  return resolveMediaText(lower, original)
+
+        return TextResult.NoContext(original)
+    }
+
+    // ── Person ─────────────────────────────────────────────────────────────
+    private fun resolvePersonText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastPerson()
-            ?: return ContextResult.ExpiredPrompt(
-                "I no longer know who you're referring to. Who would you like to contact?"
-            )
+            ?: return TextResult.Prompt("I no longer know who you're referring to. Who would you like to contact?")
 
-        if (ctx.confidence == ContextConfidence.LOW) return ContextResult.NoContext(lower)
-        if (ctx.confidence == ContextConfidence.MEDIUM) {
-            // Return prompt asking for confirmation
-            return ContextResult.ExpiredPrompt(
-                "Did you mean ${ctx.contactName}? Please confirm."
-            )
+        if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
+
+        // Replace pronoun with real name in the original text
+        val resolved = replacePronoun(original, PERSON_PRONOUNS, ctx.contactName)
+
+        return if (ctx.confidence == ContextConfidence.HIGH) {
+            TextResult.ResolvedText(resolved)
+        } else {
+            // MEDIUM: FIX 2 - store pending and return confirmation prompt
+            pendingContextText = resolved
+            TextResult.Prompt("Did you mean ${ctx.contactName}? Say yes or no.")
         }
-
-        // HIGH: auto-resolve
-        val newExtra = intent.extra.toMutableMap()
-        newExtra[IntentExtra.RECIPIENT]    = ctx.contactName
-        newExtra[IntentExtra.CONTACT_NAME] = ctx.contactName
-        if (ctx.phoneNumber != null) newExtra[IntentExtra.PHONE_NUMBER] = ctx.phoneNumber
-        newExtra[IntentExtra.ENTITY_CONFIDENCE] = "1.0"
-        return ContextResult.Resolved(intent.copy(extra = newExtra))
     }
 
-    // ── App resolution ───────────────────────────────────────────────
-
-    private fun resolveAppContext(lower: String, intent: ZaraIntent): ContextResult {
+    // ── App ──────────────────────────────────────────────────────────────
+    private fun resolveAppText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastApp()
-            ?: return ContextResult.ExpiredPrompt(
-                "I no longer know which app you mean. Which app?"
-            )
-        if (ctx.confidence == ContextConfidence.LOW) return ContextResult.NoContext(lower)
-        if (ctx.confidence == ContextConfidence.MEDIUM) {
-            return ContextResult.ExpiredPrompt("Did you mean ${ctx.appName}? Please confirm.")
+            ?: return TextResult.Prompt("I no longer know which app you mean. Which app?")
+
+        if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
+
+        val resolved = replacePronoun(original, APP_PRONOUNS, ctx.appName)
+
+        return if (ctx.confidence == ContextConfidence.HIGH) {
+            TextResult.ResolvedText(resolved)
+        } else {
+            pendingContextText = resolved
+            TextResult.Prompt("Did you mean ${ctx.appName}? Say yes or no.")
         }
-        val newExtra = intent.extra.toMutableMap()
-        newExtra[IntentExtra.APP] = ctx.appName
-        if (ctx.packageName != null) newExtra[IntentExtra.APP_PACKAGE] = ctx.packageName
-        newExtra[IntentExtra.APP_NAME] = ctx.appName
-        return ContextResult.Resolved(intent.copy(extra = newExtra))
     }
 
-    // ── Media resolution ─────────────────────────────────────────────
-
-    private fun resolveMediaContext(lower: String, intent: ZaraIntent): ContextResult {
+    // ── Media ─────────────────────────────────────────────────────────────
+    private fun resolveMediaText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastMedia()
-            ?: return ContextResult.ExpiredPrompt(
-                "I no longer know which media you mean. What would you like to play?"
-            )
-        if (ctx.confidence == ContextConfidence.LOW) return ContextResult.NoContext(lower)
-        if (ctx.confidence == ContextConfidence.MEDIUM) {
-            val name = ctx.song ?: ctx.artist ?: ctx.video ?: "that"
-            return ContextResult.ExpiredPrompt("Did you mean $name? Please confirm.")
+            ?: return TextResult.Prompt("I no longer know which media you mean. What would you like to play?")
+
+        if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
+
+        val name = ctx.song ?: ctx.artist ?: ctx.video ?: ctx.playlist ?: return TextResult.NoContext(original)
+        val resolved = replacePronoun(original, MEDIA_PRONOUNS, name)
+
+        return if (ctx.confidence == ContextConfidence.HIGH) {
+            TextResult.ResolvedText(resolved)
+        } else {
+            pendingContextText = resolved
+            TextResult.Prompt("Did you mean $name? Say yes or no.")
         }
-        val newExtra = intent.extra.toMutableMap()
-        if (ctx.song     != null) newExtra[IntentExtra.CONTENT] = ctx.song
-        if (ctx.artist   != null) newExtra[IntentExtra.ARTIST]  = ctx.artist
-        if (ctx.playlist != null) newExtra[IntentExtra.CONTENT] = ctx.playlist
-        if (ctx.video    != null) newExtra[IntentExtra.CONTENT] = ctx.video
-        return ContextResult.Resolved(intent.copy(extra = newExtra))
     }
+
+    // ── Pronoun replacement ────────────────────────────────────────────────
+    private fun replacePronoun(original: String, pronouns: Set<String>, replacement: String): String {
+        var result = original
+        // Replace longest match first to avoid partial replacements
+        for (pronoun in pronouns.sortedByDescending { it.length }) {
+            val idx = result.lowercase().indexOf(pronoun)
+            if (idx >= 0) {
+                result = result.substring(0, idx) + replacement + result.substring(idx + pronoun.length)
+                break
+            }
+        }
+        return result
+    }
+
+    /** Clear any pending medium context (e.g. on session end). */
+    fun clearPending() { pendingContextText = null }
 }

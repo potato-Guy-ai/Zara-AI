@@ -12,8 +12,6 @@ import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
 import com.zara.assistant.core.PersonalContactResolver
 import com.zara.assistant.core.SlotExtractor
-import com.zara.assistant.core.ZaraIntent
-import com.zara.assistant.core.IntentType
 import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.*
 
@@ -83,7 +81,7 @@ class VoiceSessionManager(private val context: Context) {
     private suspend fun processInput(rawText: String): String {
         val corrected = correctionLayer.correct(rawText)
 
-        // Clarification check
+        // Layer 5.3: clarification check
         if (ClarificationManager.hasPending()) {
             val r = intentRouter.tryResolveClarification(corrected)
             if (r != null) return r
@@ -103,30 +101,30 @@ class VoiceSessionManager(private val context: Context) {
         return responses.joinToString(". ")
     }
 
+    /**
+     * FIX 1: ContextResolver runs on TEXT before classification.
+     * - ResolvedText → classify the rewritten text once, run pipeline
+     * - Prompt       → return to user, no classification
+     * - NoContext     → classify original text, run pipeline
+     * No duplicate classification, no second pass, no recursion.
+     */
     private suspend fun runPipeline(text: String): String {
-        val classified = classifier.classify(text)
+        return when (val ctxResult = ContextResolver.resolve(text)) {
+            is ContextResolver.TextResult.Prompt ->
+                ctxResult.message
 
-        // Layer 6.0: Context resolution BEFORE slot extraction
-        val contextResult = ContextResolver.resolve(text, classified)
-        when (contextResult) {
-            is ContextResolver.ContextResult.ExpiredPrompt ->
-                return contextResult.message
-            is ContextResolver.ContextResult.Resolved -> {
-                // Context resolved — skip re-classification, use resolved intent
-                val resolved = contextResult.intent
-                val slotted  = SlotExtractor.extract(resolved)
-                val aliased  = PersonalContactResolver.resolve(slotted)
-                val entResolved = entityResolver.resolve(aliased)
-                val planned  = AppActionPlanner.plan(entResolved)
-                val guarded  = ExecutionGuard.guard(planned)
-                val result   = intentRouter.route(guarded)
-                ContextUpdater.update(guarded, result)
-                return result
+            is ContextResolver.TextResult.ResolvedText -> {
+                // Classify ONCE on resolved text
+                runPipelineOnText(ctxResult.text)
             }
-            is ContextResolver.ContextResult.NoContext -> { /* fall through to normal pipeline */ }
-        }
 
-        // Normal pipeline
+            is ContextResolver.TextResult.NoContext ->
+                runPipelineOnText(ctxResult.text)
+        }
+    }
+
+    private suspend fun runPipelineOnText(text: String): String {
+        val classified  = classifier.classify(text)
         val slotted     = SlotExtractor.extract(classified)
         val aliased     = PersonalContactResolver.resolve(slotted)
         val resolved    = entityResolver.resolve(aliased)
