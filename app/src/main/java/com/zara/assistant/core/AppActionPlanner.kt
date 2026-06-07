@@ -4,21 +4,19 @@ import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
 
 /**
- * Layer 5 Hardening — App Action Planner (updated).
+ * Layer 5.6 + 5 Hardening + Final Safety Fixes
  *
- * Improvements:
- * - Channel detection: PHONE / WHATSAPP / TELEGRAM / INSTAGRAM / MESSENGER
- * - WhatsApp action hardening: voice message, video call, message body vs recipient
- * - PreferredAppRegistry bias for app detection
- * - Intent sanity check: unsupported commands detected
+ * FIX 3: Voice message inference expanded.
+ * Triggers: "voice message to", "send voice message", "record a voice message",
+ *           "record voice message", "send a voice message"
  */
 object AppActionPlanner {
 
-    const val KEY_APP    = "app_plan_app"
-    const val KEY_ACTION = "app_plan_action"
-    const val KEY_TARGET = "app_plan_target"
-    const val KEY_QUERY  = "app_plan_query"
-    const val KEY_MODE   = "app_plan_mode"
+    const val KEY_APP     = "app_plan_app"
+    const val KEY_ACTION  = "app_plan_action"
+    const val KEY_TARGET  = "app_plan_target"
+    const val KEY_QUERY   = "app_plan_query"
+    const val KEY_MODE    = "app_plan_mode"
     const val KEY_CHANNEL = "app_plan_channel"
 
     private const val APP_WHATSAPP = "whatsapp"
@@ -39,15 +37,19 @@ object AppActionPlanner {
     const val ACTION_PLAY_ARTIST   = "play_artist"
     const val ACTION_PLAY_PLAYLIST = "play_playlist"
 
-    // Unsupported command keywords
-    private val UNSUPPORTED_KEYWORDS = setOf(
-        "destroy", "hack", "delete system", "format", "root", "wipe"
+    private val UNSUPPORTED_KEYWORDS = setOf("destroy", "hack", "delete system", "format", "root", "wipe")
+
+    // FIX 3: expanded voice message triggers
+    private val VOICE_MESSAGE_TRIGGERS = listOf(
+        "voice message to", "voice message for",
+        "send voice message", "send a voice message",
+        "record voice message", "record a voice message",
+        "voice msg", "send voice msg"
     )
 
     fun plan(intent: ZaraIntent): ZaraIntent {
         val raw = intent.rawText.lowercase()
 
-        // Sanity check
         if (UNSUPPORTED_KEYWORDS.any { raw.contains(it) }) {
             val newExtra = intent.extra.toMutableMap()
             newExtra["unsupported_command"] = "true"
@@ -57,15 +59,12 @@ object AppActionPlanner {
         val app = detectApp(raw, intent) ?: return intent
 
         val channel = detectChannel(raw)
-        val action  = detectAction(app, raw, channel)
+        val action  = detectAction(app, raw)
         val target  = intent.extra[IntentExtra.CONTACT_NAME]
             ?: intent.extra[IntentExtra.RECIPIENT]
             ?: intent.target
-        // Extract body: after "saying" — do NOT treat as recipient
-        val body = extractBody(raw)
-        val query = body
-            ?: intent.extra[IntentExtra.QUERY]
-            ?: intent.extra[IntentExtra.CONTENT]
+        val body  = extractBody(raw)
+        val query = body ?: intent.extra[IntentExtra.QUERY] ?: intent.extra[IntentExtra.CONTENT]
 
         val newExtra = intent.extra.toMutableMap()
         newExtra[KEY_APP]    = app
@@ -89,6 +88,8 @@ object AppActionPlanner {
         val app = PreferredAppRegistry.preferred(intent.extra[IntentExtra.APP] ?: "")
         return when {
             raw.contains("whatsapp") || app == "whatsapp" || pkg.contains("whatsapp") -> APP_WHATSAPP
+            // FIX 3: voice message without explicit whatsapp still infers whatsapp
+            VOICE_MESSAGE_TRIGGERS.any { raw.contains(it) }                          -> APP_WHATSAPP
             raw.contains("youtube")  || app == "youtube"  || pkg.contains("youtube")  -> APP_YOUTUBE
             raw.contains("spotify")  || app == "spotify"  || pkg.contains("spotify")  -> APP_MUSIC
             raw.contains(" music")   || app == "spotify"  || pkg.contains("music")    -> APP_MUSIC
@@ -97,16 +98,16 @@ object AppActionPlanner {
         }
     }
 
-    private fun detectAction(app: String, raw: String, channel: String?): String = when (app) {
+    private fun detectAction(app: String, raw: String): String = when (app) {
         APP_WHATSAPP -> when {
-            raw.contains("voice message") || raw.contains("voice msg") -> ACTION_VOICE_MESSAGE
-            raw.contains("video call")                                 -> ACTION_VIDEO_CALL
-            raw.contains("audio call")                                 -> ACTION_AUDIO_CALL
-            raw.contains("open chat")                                  -> ACTION_OPEN_CHAT
-            raw.contains("call")                                       -> ACTION_AUDIO_CALL
-            raw.contains("message") || raw.contains("msg") ||
-            raw.contains("send")                                       -> ACTION_MESSAGE
-            else                                                       -> ACTION_OPEN_CHAT
+            // FIX 3: check expanded triggers first
+            VOICE_MESSAGE_TRIGGERS.any { raw.contains(it) } -> ACTION_VOICE_MESSAGE
+            raw.contains("video call")                      -> ACTION_VIDEO_CALL
+            raw.contains("audio call")                      -> ACTION_AUDIO_CALL
+            raw.contains("open chat")                       -> ACTION_OPEN_CHAT
+            raw.contains("call")                            -> ACTION_AUDIO_CALL
+            raw.contains("message") || raw.contains("msg") || raw.contains("send") -> ACTION_MESSAGE
+            else                                            -> ACTION_OPEN_CHAT
         }
         APP_YOUTUBE -> when {
             raw.contains("search") -> ACTION_SEARCH
@@ -123,7 +124,6 @@ object AppActionPlanner {
         else -> ACTION_PLAY
     }
 
-    // Extract message body (text after "saying") — must NOT bleed into contact detection
     private fun extractBody(raw: String): String? {
         val markers = listOf(" saying ", " with message ", " that says ")
         for (m in markers) {

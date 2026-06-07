@@ -5,18 +5,29 @@ import com.zara.assistant.core.AppActionPlanner
 import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.ExecutionContract
 import com.zara.assistant.core.ExecutionGuard
+import com.zara.assistant.core.ExecutionTelemetry
 import com.zara.assistant.core.IntentAction
 import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
-import com.zara.assistant.models.ClarificationEntityType
 import com.zara.assistant.models.ClarificationCandidate
+import com.zara.assistant.models.ClarificationEntityType
 import com.zara.assistant.models.PendingClarification
 import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * Layer 5.7: Pure executor. Reads ExecutionContract when present.
- * All validation is in ExecutionGuard/ExecutionValidator.
+ * Layer 5.7 + Final Safety Fixes
+ *
+ * FIX 2: handleClarificationNeeded no longer mixes resolvedValue formats.
+ * For CONTACT type: EntityResolver already stored clarification with resolvedValue=phone.
+ * ActionExecutor's handleClarificationNeeded only fires for cases EntityResolver
+ * didn't handle (no RECIPIENT slot). In that case we cannot know phone numbers,
+ * so we store resolvedValue = displayName and mark APP type or leave it to the
+ * existing ClarificationManager store from EntityResolver.
+ *
+ * In practice: if NEEDS_CLARIFICATION is set AND EntityResolver already called
+ * ClarificationManager.store(), ActionExecutor must NOT call store() again.
+ * Fix: check ClarificationManager.hasPending() before storing.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -27,11 +38,14 @@ class ActionExecutor(private val context: Context) {
     suspend fun execute(intent: ZaraIntent): String {
         ZaraLogger.d("Executing: ${intent.action} target=${intent.target}")
 
+        if (intent.extra["unsupported_command"] == "true") {
+            return "Sorry, that command isn't supported."
+        }
+
         if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") {
             return handleClarificationNeeded(intent)
         }
 
-        // Layer 5.7: ExecutionContract path
         val contract: ExecutionContract? = ExecutionGuard.readContract(intent)
         if (contract != null) {
             return if (!contract.safe) {
@@ -45,15 +59,21 @@ class ActionExecutor(private val context: Context) {
                     else -> "I need more information to do that."
                 }
             } else {
-                executeContract(contract, intent)
+                val result = executeContract(contract, intent)
+                ExecutionTelemetry.record(
+                    intent         = intent.action,
+                    confidence     = intent.extra[IntentExtra.ENTITY_CONFIDENCE],
+                    selectedApp    = contract.app,
+                    selectedContact = contract.target,
+                    executionResult = result
+                )
+                result
             }
         }
 
-        // Layer 5.6: plan path
         val planApp = intent.extra[AppActionPlanner.KEY_APP]
         if (planApp != null) return executePlan(intent, planApp)
 
-        // Raw intent path
         return try {
             executeRaw(intent)
         } catch (e: Exception) {
@@ -62,7 +82,6 @@ class ActionExecutor(private val context: Context) {
         }
     }
 
-    // ── Layer 5.7: contract execution ────────────────────────────────────
     private suspend fun executeContract(contract: ExecutionContract, intent: ZaraIntent): String {
         val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
         val appName = intent.extra[IntentExtra.APP_NAME] ?: contract.app
@@ -89,7 +108,6 @@ class ActionExecutor(private val context: Context) {
         }
     }
 
-    // ── Layer 5.6: plan path ───────────────────────────────────────────────────
     private suspend fun executePlan(intent: ZaraIntent, app: String): String {
         val action  = intent.extra[AppActionPlanner.KEY_ACTION] ?: return executeFallback(intent)
         val target  = intent.extra[AppActionPlanner.KEY_TARGET]
@@ -119,91 +137,77 @@ class ActionExecutor(private val context: Context) {
         }
     }
 
-    // ── Raw intent path ───────────────────────────────────────────────────────────
     private suspend fun executeRaw(intent: ZaraIntent): String {
         return when (intent.action) {
             IntentAction.CALL        -> callActions.call(intent.target ?: return "Who should I call?")
             IntentAction.ANSWER_CALL -> callActions.answerCall()
             IntentAction.END_CALL    -> callActions.endCall()
-            IntentAction.SEND_SMS    -> appActions.sendSms(
-                intent.target ?: return "Who should I message?",
-                intent.extra[IntentExtra.BODY] ?: ""
-            )
-            IntentAction.SEND_WHATSAPP -> appActions.sendWhatsApp(
-                intent.target ?: return "Who should I WhatsApp?",
-                intent.extra[IntentExtra.BODY] ?: ""
-            )
+            IntentAction.SEND_SMS    -> appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
+            IntentAction.SEND_WHATSAPP -> appActions.sendWhatsApp(intent.target ?: return "Who should I WhatsApp?", intent.extra[IntentExtra.BODY] ?: "")
             IntentAction.OPEN_APP -> {
                 val pkg  = intent.extra[IntentExtra.APP_PACKAGE]
-                val name = intent.extra[IntentExtra.APP_NAME]
-                    ?: intent.extra[IntentExtra.APP]
-                    ?: intent.target
-                    ?: return "Which app?"
-                if (pkg != null) appActions.launchByPackage(pkg, name)
-                else appActions.openApp(intent.target ?: return "Which app?")
+                val name = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP] ?: intent.target ?: return "Which app?"
+                if (pkg != null) appActions.launchByPackage(pkg, name) else appActions.openApp(intent.target ?: return "Which app?")
             }
             IntentAction.OPEN_CAMERA -> appActions.openCamera()
             IntentAction.SET_ALARM   -> appActions.openAlarm()
-            IntentAction.SET_TIMER   -> {
-                val s = intent.extra[IntentExtra.DURATION]?.toLongOrNull()
-                if (s != null) appActions.setTimer(s) else appActions.openAlarm()
-            }
+            IntentAction.SET_TIMER   -> { val s = intent.extra[IntentExtra.DURATION]?.toLongOrNull(); if (s != null) appActions.setTimer(s) else appActions.openAlarm() }
             IntentAction.PLAY_MUSIC  -> {
                 val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
                 val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
                 val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
-                if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
-                else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+                if (pkg != null) appActions.playMusicByPackage(pkg, appName, content) else appActions.playMusic(content, intent.extra[IntentExtra.APP])
             }
             IntentAction.NAVIGATE_TO -> {
                 val dest = intent.extra[IntentExtra.QUERY] ?: intent.target ?: return "Where to?"
-                appActions.navigateTo(
-                    dest,
-                    preferredPackage = intent.extra[IntentExtra.APP_PACKAGE],
-                    preferredApp     = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
-                )
+                appActions.navigateTo(dest, intent.extra[IntentExtra.APP_PACKAGE], intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP])
             }
             IntentAction.SET_WIFI       -> mediaActions.openWifiSettings()
             IntentAction.SET_BLUETOOTH  -> mediaActions.openBluetoothSettings()
             IntentAction.SET_FLASHLIGHT -> mediaActions.setFlashlight(intent.extra[IntentExtra.ON] == "true")
             IntentAction.SET_VOLUME     -> mediaActions.adjustVolume(intent.extra[IntentExtra.DIRECTION] ?: "up")
-            IntentAction.SET_SILENT     -> mediaActions.setSilentMode(
-                on   = intent.extra[IntentExtra.ON] == "true",
-                mode = intent.extra[IntentExtra.MODE] ?: "silent"
-            )
-            IntentAction.LOCK_SCREEN -> mediaActions.lockScreen()
+            IntentAction.SET_SILENT     -> mediaActions.setSilentMode(intent.extra[IntentExtra.ON] == "true", intent.extra[IntentExtra.MODE] ?: "silent")
+            IntentAction.LOCK_SCREEN    -> mediaActions.lockScreen()
             else -> "I don't know how to do '${intent.action}' yet."
         }
     }
 
     private fun executeFallback(intent: ZaraIntent): String {
         val pkg  = intent.extra[IntentExtra.APP_PACKAGE]
-        val name = intent.extra[IntentExtra.APP_NAME]
-            ?: intent.extra[IntentExtra.APP]
-            ?: intent.target
-            ?: return "Which app?"
+        val name = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP] ?: intent.target ?: return "Which app?"
         return if (pkg != null) appActions.launchByPackage(pkg, name) else appActions.openApp(name)
     }
 
-    // ── Layer 5.3: clarification ─────────────────────────────────────────────────
+    /**
+     * FIX 2: Only called when EntityResolver did NOT already store clarification.
+     * EntityResolver always stores clarification with resolvedValue=phone for CONTACT.
+     * If ClarificationManager already has pending — skip storing again.
+     * For APP type: resolvedValue = display name (no package available here).
+     */
     private fun handleClarificationNeeded(intent: ZaraIntent): String {
         val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]
             ?.split("|")
             ?.filter { it.isNotBlank() }
             ?: emptyList()
         if (rawCandidates.isEmpty()) return "I'm not sure who or what you mean."
-        val entityType = when (intent.action) {
-            IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
-            else -> ClarificationEntityType.APP
-        }
-        ClarificationManager.store(
-            PendingClarification(
-                clarificationId = UUID.randomUUID().toString(),
-                originalIntent  = intent,
-                entityType      = entityType,
-                candidates      = rawCandidates.map { ClarificationCandidate(it, it) }
+
+        // If EntityResolver already stored clarification (contact case), do not overwrite
+        if (!ClarificationManager.hasPending()) {
+            val entityType = when (intent.action) {
+                IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
+                else -> ClarificationEntityType.APP
+            }
+            ClarificationManager.store(
+                PendingClarification(
+                    clarificationId = UUID.randomUUID().toString(),
+                    originalIntent  = intent,
+                    entityType      = entityType,
+                    // For contacts without phone: resolvedValue = displayName as best available
+                    // EntityResolver would have stored phone if it handled it
+                    candidates      = rawCandidates.map { ClarificationCandidate(it, it) }
+                )
             )
-        )
+        }
         val list = rawCandidates.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString(", ")
         return "I found multiple matches: $list. Which one did you mean?"
     }
