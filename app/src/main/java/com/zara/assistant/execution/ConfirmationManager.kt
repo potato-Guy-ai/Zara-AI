@@ -3,21 +3,20 @@ package com.zara.assistant.execution
 import com.zara.assistant.utils.ZaraLogger
 
 /**
- * Layer 6.5A — Confirmation Manager.
- * Generic confirmation engine reusable for messages, payments, deletions.
- * Session-only. No persistence.
+ * Layer 6.5A + Final Hardening
+ *
+ * FIX 1: resolve() no longer clears pending on yes.
+ *   pop() returns-and-clears; called by VoiceSessionManager after confirmed=true.
+ *   Guarantees plan is never null when retrieved after confirmation.
  */
 object ConfirmationManager {
 
     private var pending: ConfirmationRequest? = null
 
-    private val YES_WORDS    = setOf("yes", "yeah", "yep", "sure", "ok", "okay", "send", "confirm", "do it")
-    private val NO_WORDS     = setOf("no", "nope", "cancel", "stop", "never mind", "nevermind", "don't")
+    private val YES_WORDS = setOf("yes", "yeah", "yep", "sure", "ok", "okay", "send", "confirm", "do it")
+    private val NO_WORDS  = setOf("no", "nope", "cancel", "stop", "never mind", "nevermind", "don't")
 
-    // Actions that require confirmation before execution
-    private val CONFIRMATION_ACTIONS = setOf(
-        "SEND_WHATSAPP", "SEND_SMS", "CALL"
-    )
+    private val CONFIRMATION_ACTIONS = setOf("SEND_WHATSAPP", "SEND_SMS", "CALL")
 
     fun requiresConfirmation(action: String): Boolean = CONFIRMATION_ACTIONS.contains(action)
 
@@ -30,26 +29,33 @@ object ConfirmationManager {
 
     fun clear() { pending = null }
 
+    /** Read-only peek; does NOT clear. */
+    fun getPending(): ConfirmationRequest? = pending
+
     /**
-     * Try to resolve user input against pending confirmation.
+     * FIX 1: Returns-and-clears the pending request (read-once).
+     * Call ONLY after resolve() returns true.
+     */
+    fun pop(): ConfirmationRequest? {
+        val p = pending
+        pending = null
+        return p
+    }
+
+    /**
+     * Resolve user input.
      * Returns:
-     *   true  → confirmed, execute
-     *   false → cancelled
-     *   null  → not a yes/no, prompt again
+     *   true  → yes (pending NOT cleared here — caller must call pop())
+     *   false → no  (pending cleared here)
+     *   null  → not a yes/no
      */
     fun resolve(userText: String): Boolean? {
-        val p = pending ?: return null
+        if (pending == null) return null
         val lower = userText.trim().lowercase()
         return when {
-            YES_WORDS.any { lower == it || lower.startsWith("$it ") } -> {
-                pending = null; true
-            }
-            NO_WORDS.any { lower == it || lower.startsWith("$it ") } -> {
-                pending = null; false
-            }
+            YES_WORDS.any { lower == it || lower.startsWith("$it ") } -> true  // do NOT clear
+            NO_WORDS.any  { lower == it || lower.startsWith("$it ") } -> { pending = null; false }
             else -> null
         }
     }
-
-    fun getPending(): ConfirmationRequest? = pending
 }

@@ -8,11 +8,15 @@ import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.CompoundIntentSplitter
 import com.zara.assistant.core.EntityResolver
 import com.zara.assistant.core.ExecutionGuard
+import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.IntentRouter
 import com.zara.assistant.core.LocalIntentClassifier
 import com.zara.assistant.core.PersonalContactResolver
 import com.zara.assistant.core.SlotExtractor
+import com.zara.assistant.core.ZaraIntent
+import com.zara.assistant.execution.ActiveTask
 import com.zara.assistant.execution.ConfirmationManager
+import com.zara.assistant.execution.ConfirmationRequest
 import com.zara.assistant.execution.ConflictResolver
 import com.zara.assistant.execution.DependencyAnalyzer
 import com.zara.assistant.execution.ExecutionIntelligenceTelemetry
@@ -21,11 +25,9 @@ import com.zara.assistant.execution.ExecutionQueue
 import com.zara.assistant.execution.ExecutionRequirement
 import com.zara.assistant.execution.FailureMemory
 import com.zara.assistant.execution.FailureRecord
-import com.zara.assistant.execution.Priority
 import com.zara.assistant.execution.QueueItem
 import com.zara.assistant.execution.RecoveryManager
 import com.zara.assistant.execution.TaskRegistry
-import com.zara.assistant.execution.TaskState
 import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.*
 
@@ -99,6 +101,8 @@ class VoiceSessionManager(private val context: Context) {
         // ── Cancellation ───────────────────────────────────────────────────────
         val CANCEL_WORDS = setOf("cancel", "stop", "leave it", "never mind", "nevermind")
         if (CANCEL_WORDS.any { lower == it }) {
+            // FIX 3: cancel WAITING task on cancel command
+            ExecutionQueue.getWaiting()?.let { ExecutionQueue.markWaitingCancelled(it.plan.id) }
             ConfirmationManager.clear()
             ExecutionQueue.cancelAll()
             ClarificationManager.clear()
@@ -106,7 +110,7 @@ class VoiceSessionManager(private val context: Context) {
             return "Okay, cancelled."
         }
 
-        // ── Recovery (try again) ───────────────────────────────────────────────
+        // ── Recovery ────────────────────────────────────────────────────────────
         if (RecoveryManager.isResumeCommand(lower)) {
             val failure = RecoveryManager.popForRetry()
             if (failure != null) {
@@ -119,20 +123,29 @@ class VoiceSessionManager(private val context: Context) {
         if (ConfirmationManager.hasPending()) {
             val confirmed = ConfirmationManager.resolve(corrected)
             return when (confirmed) {
-                true  -> {
-                    val plan = ConfirmationManager.getPending()?.plan
-                    ConfirmationManager.clear()
-                    if (plan != null) {
-                        ExecutionIntelligenceTelemetry.track("confirmation_yes", plan.id)
-                        executeIntent(plan.intent)
+                true -> {
+                    // FIX 1: pop() returns-and-clears atomically
+                    val request = ConfirmationManager.pop()
+                    if (request != null) {
+                        // FIX 3: mark WAITING task as completed
+                        ExecutionQueue.markWaitingCompleted(request.planId)
+                        ExecutionIntelligenceTelemetry.track("confirmation_yes", request.planId)
+                        executeIntent(request.plan.intent)
                     } else "Okay."
                 }
-                false -> { ConfirmationManager.clear(); ExecutionIntelligenceTelemetry.track("confirmation_no"); "Okay, cancelled." }
-                null  -> "Please say yes or no."
+                false -> {
+                    // FIX 3: mark WAITING task as cancelled
+                    val waiting = ExecutionQueue.getWaiting()
+                    if (waiting != null) ExecutionQueue.markWaitingCancelled(waiting.plan.id)
+                    ConfirmationManager.clear()
+                    ExecutionIntelligenceTelemetry.track("confirmation_no")
+                    "Okay, cancelled."
+                }
+                null -> "Please say yes or no."
             }
         }
 
-        // ── Clarification check (Layer 5.3 / Layer 6) ───────────────────────
+        // ── Clarification check ───────────────────────────────────────────────
         if (ClarificationManager.hasPending()) {
             val resolvedIntent = ClarificationManager.resolve(corrected)
             val confirmedText  = ClarificationManager.popConfirmedContextText()
@@ -145,11 +158,26 @@ class VoiceSessionManager(private val context: Context) {
         val segments = CompoundIntentSplitter.split(corrected)
         if (segments.size == 1) return runPipeline(segments[0])
 
-        // Multi-segment: build plans, analyze dependencies, conflict resolve, queue
-        val intents = segments.mapNotNull { seg ->
-            try { buildIntent(seg) } catch (e: Exception) { null }
+        // FIX 4: Build intents one at a time; stop if clarification/confirmation created
+        val plans = mutableListOf<com.zara.assistant.execution.ExecutionPlan>()
+        for (seg in segments) {
+            val intent = try { buildIntent(seg) } catch (e: Exception) { continue }
+            val plan = ExecutionPlanner.plan(intent)
+            plans.add(plan)
+            // Stop enqueuing if a clarification or confirmation was triggered by this segment
+            if (ClarificationManager.hasPending() || ConfirmationManager.hasPending()) {
+                // Return the clarification/confirmation prompt immediately
+                if (ClarificationManager.hasPending()) {
+                    return "I need more information: please clarify."
+                }
+                val req = ConfirmationManager.getPending()
+                if (req != null) return req.prompt
+                break
+            }
         }
-        val plans = intents.map { ExecutionPlanner.plan(it) }
+
+        if (plans.isEmpty()) return "I couldn't process that."
+
         val analyzed  = DependencyAnalyzer.analyze(plans)
         val resolved  = ConflictResolver.resolve(analyzed)
         ExecutionQueue.clearCompleted()
@@ -161,16 +189,12 @@ class VoiceSessionManager(private val context: Context) {
         while (item != null) {
             val plan = item.plan
             try {
-                // Confirmation gate
                 if (plan.requirements.contains(ExecutionRequirement.CONFIRMATION_REQUIRED)) {
-                    ConfirmationManager.store(com.zara.assistant.execution.ConfirmationRequest(
-                        planId = plan.id,
-                        prompt = buildConfirmationPrompt(plan.intent),
-                        plan   = plan
-                    ))
+                    val prompt = buildConfirmationPrompt(plan.intent)
+                    ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))
                     ExecutionQueue.markWaiting(plan.id)
-                    responses.add(buildConfirmationPrompt(plan.intent))
-                    break  // pause queue; resume on confirmation
+                    responses.add(prompt)
+                    break
                 }
                 val result = executeIntent(plan.intent)
                 ExecutionQueue.markCompleted(plan.id)
@@ -179,8 +203,9 @@ class VoiceSessionManager(private val context: Context) {
             } catch (e: Exception) {
                 ZaraLogger.e("Queue task failed: ${e.message}")
                 ExecutionQueue.markFailed(plan.id)
-                FailureMemory.record(FailureRecord(plan.id, plan.intent, e.message ?: "unknown", listOf("try again", "cancel")))
-                RecoveryManager.recordFailure(FailureRecord(plan.id, plan.intent, e.message ?: "unknown", listOf("try again")))
+                val rec = FailureRecord(plan.id, plan.intent, e.message ?: "unknown", listOf("try again", "cancel"))
+                FailureMemory.record(rec)
+                RecoveryManager.recordFailure(rec)
                 ExecutionIntelligenceTelemetry.track("task_failed", plan.id, e.message)
                 responses.add("Couldn't complete one of those actions.")
             }
@@ -202,32 +227,27 @@ class VoiceSessionManager(private val context: Context) {
         return executeIntent(intent)
     }
 
-    /** Build a fully-pipeline-processed intent from text. */
-    private suspend fun buildIntent(text: String): com.zara.assistant.core.ZaraIntent {
-        val classified  = classifier.classify(text)
-        val slotted     = SlotExtractor.extract(classified)
-        val aliased     = PersonalContactResolver.resolve(slotted)
-        val resolved    = entityResolver.resolve(aliased)
-        val planned     = AppActionPlanner.plan(resolved)
+    private suspend fun buildIntent(text: String): ZaraIntent {
+        val classified = classifier.classify(text)
+        val slotted    = SlotExtractor.extract(classified)
+        val aliased    = PersonalContactResolver.resolve(slotted)
+        val resolved   = entityResolver.resolve(aliased)
+        val planned    = AppActionPlanner.plan(resolved)
         return ExecutionGuard.guard(planned)
     }
 
-    /** Execute a fully-processed intent and update context. */
-    private suspend fun executeIntent(intent: com.zara.assistant.core.ZaraIntent): String {
-        val result = intentRouter.route(intent)
+    private suspend fun executeIntent(intent: ZaraIntent): String {
+        val result  = intentRouter.route(intent)
         ContextUpdater.update(intent, result)
-        // Update TaskRegistry for active task tracking
-        val appName = intent.extra[com.zara.assistant.core.IntentExtra.APP_NAME]
-        val pkg     = intent.extra[com.zara.assistant.core.IntentExtra.APP_PACKAGE]
-        if (appName != null) {
-            TaskRegistry.register(com.zara.assistant.execution.ActiveTask("app", appName, pkg))
-        }
+        val appName = intent.extra[IntentExtra.APP_NAME]
+        val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
+        if (appName != null) TaskRegistry.register(ActiveTask("app", appName, pkg))
         return result
     }
 
-    private fun buildConfirmationPrompt(intent: com.zara.assistant.core.ZaraIntent): String {
-        val contact = intent.extra[com.zara.assistant.core.IntentExtra.CONTACT_NAME] ?: intent.target ?: "unknown"
-        val body    = intent.extra[com.zara.assistant.core.IntentExtra.BODY] ?: ""
+    private fun buildConfirmationPrompt(intent: ZaraIntent): String {
+        val contact = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "unknown"
+        val body    = intent.extra[IntentExtra.BODY] ?: ""
         return when (intent.action) {
             "SEND_WHATSAPP" -> "Message to $contact ready: \"$body\". Send?"
             "SEND_SMS"      -> "SMS to $contact ready: \"$body\". Send?"
