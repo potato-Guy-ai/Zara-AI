@@ -98,10 +98,9 @@ class VoiceSessionManager(private val context: Context) {
         val corrected = correctionLayer.correct(rawText)
         val lower = corrected.trim().lowercase()
 
-        // ── Cancellation ───────────────────────────────────────────────────────
+        // ── Cancellation ─────────────────────────────────────────────────────
         val CANCEL_WORDS = setOf("cancel", "stop", "leave it", "never mind", "nevermind")
         if (CANCEL_WORDS.any { lower == it }) {
-            // FIX 3: cancel WAITING task on cancel command
             ExecutionQueue.getWaiting()?.let { ExecutionQueue.markWaitingCancelled(it.plan.id) }
             ConfirmationManager.clear()
             ExecutionQueue.cancelAll()
@@ -110,7 +109,7 @@ class VoiceSessionManager(private val context: Context) {
             return "Okay, cancelled."
         }
 
-        // ── Recovery ────────────────────────────────────────────────────────────
+        // ── Recovery ──────────────────────────────────────────────────────────
         if (RecoveryManager.isResumeCommand(lower)) {
             val failure = RecoveryManager.popForRetry()
             if (failure != null) {
@@ -119,22 +118,19 @@ class VoiceSessionManager(private val context: Context) {
             }
         }
 
-        // ── Confirmation check ───────────────────────────────────────────────
+        // ── Confirmation check ────────────────────────────────────────────────
         if (ConfirmationManager.hasPending()) {
             val confirmed = ConfirmationManager.resolve(corrected)
             return when (confirmed) {
                 true -> {
-                    // FIX 1: pop() returns-and-clears atomically
                     val request = ConfirmationManager.pop()
                     if (request != null) {
-                        // FIX 3: mark WAITING task as completed
                         ExecutionQueue.markWaitingCompleted(request.planId)
                         ExecutionIntelligenceTelemetry.track("confirmation_yes", request.planId)
                         executeIntent(request.plan.intent)
                     } else "Okay."
                 }
                 false -> {
-                    // FIX 3: mark WAITING task as cancelled
                     val waiting = ExecutionQueue.getWaiting()
                     if (waiting != null) ExecutionQueue.markWaitingCancelled(waiting.plan.id)
                     ConfirmationManager.clear()
@@ -150,7 +146,9 @@ class VoiceSessionManager(private val context: Context) {
             val resolvedIntent = ClarificationManager.resolve(corrected)
             val confirmedText  = ClarificationManager.popConfirmedContextText()
             if (confirmedText != null) return runPipelineOnText(confirmedText)
-            if (resolvedIntent != null) return intentRouter.route(resolvedIntent)
+            // FIX 7: route through executeIntent (not intentRouter.route directly)
+            // so ContextUpdater.update() is called and context is stored after clarification.
+            if (resolvedIntent != null) return executeIntent(resolvedIntent)
             if (ClarificationManager.hasPending()) return "I didn't catch that. Please say the name or number."
         }
 
@@ -164,9 +162,7 @@ class VoiceSessionManager(private val context: Context) {
             val intent = try { buildIntent(seg) } catch (e: Exception) { continue }
             val plan = ExecutionPlanner.plan(intent)
             plans.add(plan)
-            // Stop enqueuing if a clarification or confirmation was triggered by this segment
             if (ClarificationManager.hasPending() || ConfirmationManager.hasPending()) {
-                // Return the clarification/confirmation prompt immediately
                 if (ClarificationManager.hasPending()) {
                     return "I need more information: please clarify."
                 }

@@ -9,17 +9,13 @@ import com.zara.assistant.models.PendingClarification
 import java.util.UUID
 
 /**
- * Layer 6.0 + Critical Architecture Fixes
+ * Batch A1 — Fix 5 + Fix 6
  *
- * ARCHITECTURE FIX:
- *   pendingContextText REMOVED.
- *   MEDIUM confidence now uses ClarificationManager (sole clarification authority).
- *   PendingClarification with entityType=CONTEXT stores the resolved text as resolvedValue.
- *   ClarificationManager.popConfirmedContextText() returns it after user confirms.
- *   Timeout inherited from PendingClarification.TIMEOUT_MS (30s). No second timeout.
+ * Uses currentConfidence (time-decayed) instead of stored confidence.
+ * Expiry is now 45s (person/media/query) / 60s (app/action).
+ * After expiry, pronoun references return a prompt asking who the user means.
  *
- * ContextResolver operates on TEXT before classification (no pre-classified intent needed).
- * Returns TextResult: ResolvedText | Prompt | NoContext.
+ * Architecture unchanged: ClarificationManager is sole clarification authority.
  */
 object ContextResolver {
 
@@ -40,11 +36,8 @@ object ContextResolver {
     )
 
     sealed class TextResult {
-        /** Resolved text — classify once and run pipeline */
         data class ResolvedText(val text: String) : TextResult()
-        /** Return to user; do NOT classify */
         data class Prompt(val message: String) : TextResult()
-        /** No pronoun or context unsafe — pass through unchanged */
         data class NoContext(val text: String) : TextResult()
     }
 
@@ -60,56 +53,70 @@ object ContextResolver {
     private fun resolvePersonText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastPerson()
             ?: return TextResult.Prompt("I no longer know who you're referring to. Who would you like to contact?")
-        if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
-        val resolved = replacePronoun(original, PERSON_PRONOUNS, ctx.contactName)
-        return if (ctx.confidence == ContextConfidence.HIGH) {
-            TextResult.ResolvedText(resolved)
-        } else {
-            // MEDIUM: delegate to ClarificationManager (sole authority)
-            storeMediumClarification(original, resolved, ctx.contactName)
-            TextResult.Prompt("Did you mean ${ctx.contactName}? Say yes or no.")
+
+        // FIX 6: use currentConfidence (time-decayed), not stored confidence
+        return when (ctx.currentConfidence) {
+            ContextConfidence.HIGH -> {
+                val resolved = replacePronoun(original, PERSON_PRONOUNS, ctx.contactName)
+                TextResult.ResolvedText(resolved)
+            }
+            ContextConfidence.MEDIUM -> {
+                val resolved = replacePronoun(original, PERSON_PRONOUNS, ctx.contactName)
+                storeMediumClarification(original, resolved, ctx.contactName)
+                TextResult.Prompt("Did you mean ${ctx.contactName}? Say yes or no.")
+            }
+            ContextConfidence.LOW -> {
+                // Treat LOW same as expired
+                TextResult.Prompt("I no longer know who you're referring to. Who would you like to contact?")
+            }
         }
     }
 
     private fun resolveAppText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastApp()
             ?: return TextResult.Prompt("I no longer know which app you mean. Which app?")
-        if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
-        val resolved = replacePronoun(original, APP_PRONOUNS, ctx.appName)
-        return if (ctx.confidence == ContextConfidence.HIGH) {
-            TextResult.ResolvedText(resolved)
-        } else {
-            storeMediumClarification(original, resolved, ctx.appName)
-            TextResult.Prompt("Did you mean ${ctx.appName}? Say yes or no.")
+        return when (ctx.currentConfidence) {
+            ContextConfidence.HIGH -> {
+                val resolved = replacePronoun(original, APP_PRONOUNS, ctx.appName)
+                TextResult.ResolvedText(resolved)
+            }
+            ContextConfidence.MEDIUM -> {
+                val resolved = replacePronoun(original, APP_PRONOUNS, ctx.appName)
+                storeMediumClarification(original, resolved, ctx.appName)
+                TextResult.Prompt("Did you mean ${ctx.appName}? Say yes or no.")
+            }
+            ContextConfidence.LOW -> {
+                TextResult.Prompt("I no longer know which app you mean. Which app?")
+            }
         }
     }
 
     private fun resolveMediaText(lower: String, original: String): TextResult {
         val ctx = ConversationContextManager.lastMedia()
             ?: return TextResult.Prompt("I no longer know which media you mean. What would you like to play?")
-        if (ctx.confidence == ContextConfidence.LOW) return TextResult.NoContext(original)
         val name = ctx.song ?: ctx.artist ?: ctx.video ?: ctx.playlist
             ?: return TextResult.NoContext(original)
-        val resolved = replacePronoun(original, MEDIA_PRONOUNS, name)
-        return if (ctx.confidence == ContextConfidence.HIGH) {
-            TextResult.ResolvedText(resolved)
-        } else {
-            storeMediumClarification(original, resolved, name)
-            TextResult.Prompt("Did you mean $name? Say yes or no.")
+        return when (ctx.currentConfidence) {
+            ContextConfidence.HIGH -> {
+                val resolved = replacePronoun(original, MEDIA_PRONOUNS, name)
+                TextResult.ResolvedText(resolved)
+            }
+            ContextConfidence.MEDIUM -> {
+                val resolved = replacePronoun(original, MEDIA_PRONOUNS, name)
+                storeMediumClarification(original, resolved, name)
+                TextResult.Prompt("Did you mean $name? Say yes or no.")
+            }
+            ContextConfidence.LOW -> {
+                TextResult.Prompt("I no longer know which media you mean. What would you like to play?")
+            }
         }
     }
 
-    /**
-     * MEDIUM confidence: stores a CONTEXT-type PendingClarification in ClarificationManager.
-     * resolvedValue = resolved text to classify if user confirms.
-     * Timeout inherited from PendingClarification.TIMEOUT_MS (30s).
-     */
     private fun storeMediumClarification(originalText: String, resolvedText: String, entityName: String) {
-        // Use a minimal ZaraIntent as placeholder (rawText carries the original input)
         val placeholder = ZaraIntent(
-            type      = com.zara.assistant.core.IntentType.UNKNOWN,
-            action    = com.zara.assistant.core.IntentAction.UNKNOWN,
-            rawText   = originalText
+            type    = com.zara.assistant.core.IntentType.UNKNOWN,
+            action  = com.zara.assistant.core.IntentAction.UNKNOWN,
+            rawText = originalText
         )
         ClarificationManager.store(
             PendingClarification(
@@ -119,7 +126,7 @@ object ContextResolver {
                 candidates      = listOf(
                     ClarificationCandidate(
                         displayName   = entityName,
-                        resolvedValue = resolvedText,  // text to re-classify on confirmation
+                        resolvedValue = resolvedText,
                         confidence    = 0.65f
                     )
                 )
