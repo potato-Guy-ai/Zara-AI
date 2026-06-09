@@ -16,18 +16,9 @@ import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * Layer 5.7 + Final Safety Fixes
+ * Layer 5.7 + Final Safety Fixes + Batch B1
  *
- * FIX 2: handleClarificationNeeded no longer mixes resolvedValue formats.
- * For CONTACT type: EntityResolver already stored clarification with resolvedValue=phone.
- * ActionExecutor's handleClarificationNeeded only fires for cases EntityResolver
- * didn't handle (no RECIPIENT slot). In that case we cannot know phone numbers,
- * so we store resolvedValue = displayName and mark APP type or leave it to the
- * existing ClarificationManager store from EntityResolver.
- *
- * In practice: if NEEDS_CLARIFICATION is set AND EntityResolver already called
- * ClarificationManager.store(), ActionExecutor must NOT call store() again.
- * Fix: check ClarificationManager.hasPending() before storing.
+ * B1: Added SEARCH_QUERY execution path in executeRaw.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -151,12 +142,23 @@ class ActionExecutor(private val context: Context) {
             }
             IntentAction.OPEN_CAMERA -> appActions.openCamera()
             IntentAction.SET_ALARM   -> appActions.openAlarm()
-            IntentAction.SET_TIMER   -> { val s = intent.extra[IntentExtra.DURATION]?.toLongOrNull(); if (s != null) appActions.setTimer(s) else appActions.openAlarm() }
+            IntentAction.SET_TIMER   -> {
+                val s = intent.extra[IntentExtra.DURATION]?.toLongOrNull()
+                if (s != null) appActions.setTimer(s) else appActions.openAlarm()
+            }
             IntentAction.PLAY_MUSIC  -> {
                 val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
                 val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
                 val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
-                if (pkg != null) appActions.playMusicByPackage(pkg, appName, content) else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+                if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
+                else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+            }
+            // B1: SEARCH_QUERY execution
+            IntentAction.SEARCH_QUERY -> {
+                val query = intent.extra[IntentExtra.QUERY] ?: intent.target
+                    ?: return "What would you like to search for?"
+                val app = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
+                appActions.search(query, app)
             }
             IntentAction.NAVIGATE_TO -> {
                 val dest = intent.extra[IntentExtra.QUERY] ?: intent.target ?: return "Where to?"
@@ -178,12 +180,6 @@ class ActionExecutor(private val context: Context) {
         return if (pkg != null) appActions.launchByPackage(pkg, name) else appActions.openApp(name)
     }
 
-    /**
-     * FIX 2: Only called when EntityResolver did NOT already store clarification.
-     * EntityResolver always stores clarification with resolvedValue=phone for CONTACT.
-     * If ClarificationManager already has pending — skip storing again.
-     * For APP type: resolvedValue = display name (no package available here).
-     */
     private fun handleClarificationNeeded(intent: ZaraIntent): String {
         val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]
             ?.split("|")
@@ -191,7 +187,6 @@ class ActionExecutor(private val context: Context) {
             ?: emptyList()
         if (rawCandidates.isEmpty()) return "I'm not sure who or what you mean."
 
-        // If EntityResolver already stored clarification (contact case), do not overwrite
         if (!ClarificationManager.hasPending()) {
             val entityType = when (intent.action) {
                 IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
@@ -202,8 +197,6 @@ class ActionExecutor(private val context: Context) {
                     clarificationId = UUID.randomUUID().toString(),
                     originalIntent  = intent,
                     entityType      = entityType,
-                    // For contacts without phone: resolvedValue = displayName as best available
-                    // EntityResolver would have stored phone if it handled it
                     candidates      = rawCandidates.map { ClarificationCandidate(it, it) }
                 )
             )

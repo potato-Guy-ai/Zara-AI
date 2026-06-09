@@ -40,6 +40,8 @@ object IntentAction {
     const val LOCK_SCREEN    = "LOCK_SCREEN"
     const val NAVIGATE_TO    = "NAVIGATE_TO"
     const val PLAY_MUSIC     = "PLAY_MUSIC"
+    // B1: standalone search intent
+    const val SEARCH_QUERY   = "SEARCH_QUERY"
     const val TIME           = "TIME"
     const val DATE           = "DATE"
     const val GREETING       = "GREETING"

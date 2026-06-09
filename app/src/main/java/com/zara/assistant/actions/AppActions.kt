@@ -27,11 +27,9 @@ class AppActions(private val context: Context) {
 
     // ── App launch ────────────────────────────────────────────────────────
 
-    /** Layer 5.2: launch directly by resolved package — no duplicate resolution. */
     fun launchByPackage(pkg: String, displayName: String?): String =
         launchPackage(pkg, displayName ?: pkg)
 
-    /** Fallback: resolve by name then launch. */
     fun openApp(name: String): String {
         val result = resolver.resolve(name.lowercase().trim(), getAppCache())
         return when {
@@ -135,17 +133,12 @@ class AppActions(private val context: Context) {
 
     // ── Navigation ────────────────────────────────────────────────────────
 
-    /**
-     * Layer 5.2: preferredPackage (resolved) takes priority over preferredApp (name).
-     * Falls back through: package → app name → generic geo URI.
-     */
     fun navigateTo(
         destination: String,
         preferredPackage: String? = null,
         preferredApp: String? = null
     ): String {
         return try {
-            // Build URI based on known app name/package
             val appHint = preferredApp?.lowercase()
             val uri = when {
                 preferredPackage == "com.google.android.apps.maps" ||
@@ -156,13 +149,11 @@ class AppActions(private val context: Context) {
                 else -> Uri.parse("geo:0,0?q=${Uri.encode(destination)}")
             }
             val intent = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            // If resolved package known, restrict to it
             if (preferredPackage != null) intent.setPackage(preferredPackage)
             if (context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()) {
                 context.startActivity(intent)
                 return "Navigating to $destination${if (preferredApp != null) " on $preferredApp" else ""}."
             }
-            // Fallback: generic geo without package restriction
             val fallback = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(destination)}"))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(fallback)
@@ -176,24 +167,30 @@ class AppActions(private val context: Context) {
     // ── Music ─────────────────────────────────────────────────────────────
 
     /**
-     * Layer 5.2: launch resolved package directly, then search within it if possible.
-     * Falls back to playMusic() if package can't handle the search URI.
+     * B2 fix: Spotify deep-link URI (spotify:search:query) does not resolve via
+     * queryIntentActivities with setPackage on all devices. Fire the intent directly
+     * and catch any ActivityNotFoundException. Fallback to app launch.
      */
     fun playMusicByPackage(pkg: String, appName: String?, query: String?): String {
         return try {
-            // Try deep-link search first (Spotify supports this)
             if (query != null) {
                 val searchUri = when {
-                    pkg.contains("spotify") -> Uri.parse("spotify:search:$query")
+                    pkg.contains("spotify") -> Uri.parse("spotify:search:${Uri.encode(query)}")
+                    pkg.contains("youtube") -> Uri.parse(
+                        "https://www.youtube.com/results?search_query=${Uri.encode(query)}"
+                    )
                     else -> null
                 }
                 if (searchUri != null) {
                     val intent = Intent(Intent.ACTION_VIEW, searchUri)
-                        .setPackage(pkg)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (context.packageManager.queryIntentActivities(intent, 0).isNotEmpty()) {
+                    // B2 fix: set package only for Spotify (deep link); YouTube uses browser/app chooser
+                    if (pkg.contains("spotify")) intent.setPackage(pkg)
+                    try {
                         context.startActivity(intent)
                         return "Playing $query on ${appName ?: pkg}."
+                    } catch (ignored: Exception) {
+                        ZaraLogger.d("playMusicByPackage: deep-link failed for $pkg, falling back")
                     }
                 }
             }
@@ -205,17 +202,21 @@ class AppActions(private val context: Context) {
         }
     }
 
-    /** Fallback music play by app name. */
     fun playMusic(query: String?, app: String? = null): String {
         val appLower = app?.lowercase()
         return try {
             if (appLower == null || appLower.contains("spotify")) {
                 if (query != null) {
-                    val spotifyIntent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:$query"))
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    if (context.packageManager.queryIntentActivities(spotifyIntent, 0).isNotEmpty()) {
+                    // B2 fix: fire Spotify URI directly, no queryIntentActivities gate
+                    try {
+                        val spotifyIntent = Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("spotify:search:${Uri.encode(query)}")
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         context.startActivity(spotifyIntent)
                         return "Playing $query on Spotify."
+                    } catch (ignored: Exception) {
+                        ZaraLogger.d("playMusic: Spotify URI failed, trying fallback")
                     }
                 }
             }
@@ -237,6 +238,74 @@ class AppActions(private val context: Context) {
         } catch (e: Exception) {
             ZaraLogger.e("playMusic: ${e.message}")
             "Couldn't open music app."
+        }
+    }
+
+    // ── B1: YouTube search ───────────────────────────────────────────────
+
+    /**
+     * Opens YouTube with a search query.
+     * Tries YouTube app deep link first, then web URL fallback.
+     */
+    fun searchYouTube(query: String): String {
+        return try {
+            // YouTube app supports this URI scheme
+            val ytPkg = getAppCache()["youtube"]
+            if (ytPkg != null) {
+                try {
+                    val intent = Intent(
+                        Intent.ACTION_SEARCH,
+                        Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
+                    ).setPackage(ytPkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    return "Searching YouTube for $query."
+                } catch (ignored: Exception) {
+                    // try web fallback
+                }
+                try {
+                    val browserIntent = Intent(
+                        Intent.ACTION_VIEW,
+                        Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
+                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(browserIntent)
+                    return "Searching YouTube for $query."
+                } catch (ignored: Exception) { }
+            }
+            // No YouTube app — open browser
+            val browserIntent = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(browserIntent)
+            "Searching YouTube for $query."
+        } catch (e: Exception) {
+            ZaraLogger.e("searchYouTube: ${e.message}")
+            "Couldn't search YouTube."
+        }
+    }
+
+    /**
+     * B1: Generic web/app search.
+     * If APP slot specifies youtube → searchYouTube.
+     * Otherwise opens web search.
+     */
+    fun search(query: String, app: String? = null): String {
+        val appLower = app?.lowercase()
+        return when {
+            appLower != null && (appLower.contains("youtube") || appLower == "yt") ->
+                searchYouTube(query)
+            else -> {
+                try {
+                    val uri = Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")
+                    val intent = Intent(Intent.ACTION_VIEW, uri)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    context.startActivity(intent)
+                    "Searching for $query."
+                } catch (e: Exception) {
+                    ZaraLogger.e("search: ${e.message}")
+                    "Couldn't perform search."
+                }
+            }
         }
     }
 }

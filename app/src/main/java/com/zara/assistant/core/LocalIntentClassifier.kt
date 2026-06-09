@@ -10,20 +10,18 @@ package com.zara.assistant.core
  *   trigger device actions. Confidence gating prevents false positives.
  * - Channel (SMS vs WhatsApp) is extracted and preserved.
  * - Phrase normalization handles varied call/message phrasings.
+ *
+ * B1: Added SEARCH_QUERY intent for standalone search commands.
  */
 class LocalIntentClassifier {
 
     // ── Knowledge-question guard (checked FIRST) ───────────────────────────
-    // These patterns indicate the user wants information, not a device action.
-    // Must be evaluated before any action regex.
     private val reKnowledge = Regex(
         ".*(how (do|does|can|would|to)|what is|what are|explain|tell me about|" +
         "describe|difference between|meaning of|definition of|understand).*"
     )
 
-    // ── Call intent — normalized phrase variants ───────────────────────────
-    // Handles: "call", "dial", "phone", "ring", "make a call to/for"
-    // Requires a non-empty target AFTER the verb phrase.
+    // ── Call intent ────────────────────────────────────────────────────────
     private val reCallAction = Regex(
         "(?:call|dial|phone|ring|make (?:a )?call (?:to|for))\\s+(.+)"
     )
@@ -31,17 +29,12 @@ class LocalIntentClassifier {
     private val reEndCall    = Regex(".*(hang up|end call|end the call|reject call|disconnect).*")
 
     // ── Message intent ─────────────────────────────────────────────────────
-    // Detects WhatsApp channel explicitly.
-    // Extracts contact from: "message X", "text X", "send [sms/whatsapp] [message] to X"
     private val reWhatsappChannel = Regex(".*whatsapp.*")
     private val reSmsChannel      = Regex(".*(send sms|send a text|text message|sms to).*")
-    // Contact extraction: contact name appears after verb, before "saying/that/with"
-    // Handles: "message Amma saying...", "tell Amma...", "send [to] Amma saying..."
     private val reMsgVerb    = Regex(
         "(?:message|text|tell|whatsapp|msg|send(?: (?:sms|a text|whatsapp(?: message)?))?(?: to)?)\\s+([\\w\\s]+?)\\s+(?:saying|that|with message|with body|that says|:)\\s*(.*)",
         RegexOption.IGNORE_CASE
     )
-    // Fallback: "message X" with no body
     private val reMsgFallback = Regex(
         "(?:message|text|whatsapp|msg)\\s+(.+)"
     )
@@ -54,6 +47,16 @@ class LocalIntentClassifier {
         "(?:open|launch|start|switch to|go to app)\\s+(.+)"
     )
     private val reOpenTrigger = Regex(".*(open|launch|start|switch to|go to app).*")
+
+    // ── B1: Search intent ──────────────────────────────────────────────────
+    // Matches: "search cats", "search for cats", "search cats on youtube",
+    //          "find cats", "look up cats", "look for cats"
+    private val reSearch = Regex(
+        "(?:search(?: for)?|find|look(?:ing)? (?:up|for))\\s+(.+)"
+    )
+    private val reSearchTrigger = Regex(
+        ".*(search(?: for)?|^find |look(?:ing)? (?:up|for)).*"
+    )
 
     // ── Device controls ────────────────────────────────────────────────────
     private val reWifi        = Regex(".*(wi.?fi).*")
@@ -69,9 +72,6 @@ class LocalIntentClassifier {
     private val rePlayTrigger = Regex(".*(play|listen to).*")
 
     // ── Sound mode ─────────────────────────────────────────────────────────
-    // Silent ON:  "silent mode", "turn on silent", "enable silent", "mute", "dnd"
-    // Silent OFF: "turn off silent", "disable silent", "normal mode", "ring mode"
-    // Vibrate:    "vibrate mode", "enable vibrate"
     private val reSilentOn  = Regex(
         ".*(turn on silent|enable silent|silent mode|put on silent|do not disturb|dnd|^mute$|^mute everything$).*"
     )
@@ -99,8 +99,6 @@ class LocalIntentClassifier {
         val t = text.lowercase().trim()
 
         // ── 1. Knowledge guard — must run FIRST ──────────────────────────
-        // Catches: "how do I call an API", "explain Bluetooth", "tell me about WiFi"
-        // Exception: "tell X" (message intent) — does not match reKnowledge
         if (reKnowledge.matches(t)) {
             return cloudIntent(text)
         }
@@ -167,13 +165,21 @@ class LocalIntentClassifier {
                 extra = mapOf(IntentExtra.DIRECTION to dir))
         }
 
-        // ── 13. Conversation ─────────────────────────────────────────────
+        // ── 13. B1: Search ───────────────────────────────────────────────
+        reSearch.find(t)?.let { m ->
+            val query = m.groupValues[2].trim()
+            if (query.isNotBlank()) {
+                return action(IntentAction.SEARCH_QUERY, text, target = query)
+            }
+        }
+
+        // ── 14. Conversation ─────────────────────────────────────────────
         if (reTime.matches(t))     return conv(IntentAction.TIME, text)
         if (reDate.matches(t))     return conv(IntentAction.DATE, text)
         if (reGreeting.matches(t)) return conv(IntentAction.GREETING, text)
         if (reStop.matches(t))     return conv(IntentAction.STOP, text)
 
-        // ── 14. Cloud fallback ───────────────────────────────────────────
+        // ── 15. Cloud fallback ───────────────────────────────────────────
         if (t.length > 12) return cloudIntent(text)
 
         return unknown(text)
@@ -184,7 +190,6 @@ class LocalIntentClassifier {
     // ══════════════════════════════════════════════════════════════════════
 
     private fun isMessageIntent(t: String): Boolean {
-        // Must contain a messaging verb — but NOT a knowledge question prefix
         return (t.startsWith("message ") || t.startsWith("text ") ||
                 t.startsWith("tell ") || t.startsWith("whatsapp ") ||
                 t.contains("send sms") || t.contains("send a text") ||
@@ -192,16 +197,14 @@ class LocalIntentClassifier {
     }
 
     private fun messageIntent(t: String, raw: String): ZaraIntent {
-        // Detect channel
         val channel = when {
             reWhatsappChannel.matches(t) -> ChannelType.WHATSAPP
             reSmsChannel.matches(t)      -> ChannelType.SMS
-            else                         -> ChannelType.SMS  // default
+            else                         -> ChannelType.SMS
         }
         val action = if (channel == ChannelType.WHATSAPP) IntentAction.SEND_WHATSAPP
                      else IntentAction.SEND_SMS
 
-        // Extract contact + body via primary pattern
         reMsgVerb.find(t)?.let { m ->
             val contact = m.groupValues[1].trim()
             val body    = m.groupValues[2].trim()
@@ -214,7 +217,6 @@ class LocalIntentClassifier {
             }
         }
 
-        // Fallback: "message X" — no body extracted
         reMsgFallback.find(t)?.let { m ->
             val contact = m.groupValues[1].trim()
             if (contact.isNotBlank()) {

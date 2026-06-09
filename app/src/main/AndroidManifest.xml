@@ -36,6 +36,9 @@
     <!-- Do Not Disturb / Silent mode (special permission, not runtime) -->
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
+    <!-- B3: Timer requires SET_ALARM -->
+    <uses-permission android:name="android.permission.SET_ALARM" />
+
     <!-- System -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

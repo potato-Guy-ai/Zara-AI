@@ -1,7 +1,7 @@
 package com.zara.assistant.core
 
 /**
- * Layer 4A/4B/4C — Slot Extraction.
+ * Layer 4A/4B/4C + Batch B1
  *
  * Stateless, pure, no Android dependencies, no coroutines, no background work.
  * Deterministic regex/rule-based extraction only.
@@ -13,10 +13,10 @@ package com.zara.assistant.core
  *   4C-1. RECIPIENT            — mirrors target for CALL / SEND_SMS / SEND_WHATSAPP
  *   4C-2. BODY preservation    — BODY forwarded unchanged if already present
  *   4C-3. Channel expansion    — CHANNEL normalized for telegram/signal/messenger/discord
+ *   B1.   SEARCH_QUERY         — extract app slot from "search X on youtube"
  */
 object SlotExtractor {
 
-    // Compiled once — never per call.
     private val reDuration = Regex(
         "(\\d+(?:\\.\\d+)?)\\s*(hour|hr|minute|min|second|sec)s?",
         RegexOption.IGNORE_CASE
@@ -24,9 +24,10 @@ object SlotExtractor {
 
     fun extract(intent: ZaraIntent): ZaraIntent {
         return when (intent.action) {
-            IntentAction.PLAY_MUSIC   -> extractMedia(intent)
-            IntentAction.NAVIGATE_TO  -> extractNavigation(intent)
-            IntentAction.SET_TIMER    -> extractDuration(intent)
+            IntentAction.PLAY_MUSIC    -> extractMedia(intent)
+            IntentAction.NAVIGATE_TO   -> extractNavigation(intent)
+            IntentAction.SET_TIMER     -> extractDuration(intent)
+            IntentAction.SEARCH_QUERY  -> extractSearch(intent)   // B1
             IntentAction.CALL,
             IntentAction.SEND_SMS,
             IntentAction.SEND_WHATSAPP -> extractRecipientAndChannel(intent)
@@ -34,7 +35,7 @@ object SlotExtractor {
         }
     }
 
-    // ── 4B Rule 1+2 (media): "play believer on spotify" ──────────────────────
+    // ── 4B Rule 1+2 (media) ─────────────────────────────────────────────
     private fun extractMedia(intent: ZaraIntent): ZaraIntent {
         val raw = intent.target ?: return intent
         val lastOnIdx = raw.lastIndexOf(" on ", ignoreCase = true)
@@ -50,7 +51,7 @@ object SlotExtractor {
         return intent.copy(extra = newExtra)
     }
 
-    // ── 4B Rule 1+2 (navigation): "navigate to airport on google maps" ────────
+    // ── 4B Rule 1+2 (navigation) ────────────────────────────────────────
     private fun extractNavigation(intent: ZaraIntent): ZaraIntent {
         val raw = intent.target ?: return intent
         val lastOnIdx = raw.lastIndexOf(" on ", ignoreCase = true)
@@ -66,7 +67,7 @@ object SlotExtractor {
         return intent.copy(extra = newExtra)
     }
 
-    // ── 4B Rule 3: duration normalized to seconds ───────────────────────────
+    // ── 4B Rule 3 ────────────────────────────────────────────────────────
     private fun extractDuration(intent: ZaraIntent): ZaraIntent {
         var totalSeconds = 0.0
         var found = false
@@ -86,19 +87,33 @@ object SlotExtractor {
         return intent.copy(extra = newExtra)
     }
 
-    // ── 4C Rule 1+2+3: recipient mirror + channel expansion ───────────────────
+    // ── B1: Search slot extraction ───────────────────────────────────────
+    // "search cats on youtube" → QUERY=cats, APP=youtube
+    // "search cats" → QUERY=cats (no APP)
+    private fun extractSearch(intent: ZaraIntent): ZaraIntent {
+        val raw = intent.target ?: return intent
+        val lastOnIdx = raw.lastIndexOf(" on ", ignoreCase = true)
+        val newExtra = intent.extra.toMutableMap()
+        if (lastOnIdx >= 0) {
+            val query = raw.substring(0, lastOnIdx).trim()
+            val app   = raw.substring(lastOnIdx + 4).trim()
+            if (query.isNotEmpty()) newExtra[IntentExtra.QUERY] = query
+            if (app.isNotEmpty())   newExtra[IntentExtra.APP]   = app
+        } else {
+            if (raw.isNotEmpty()) newExtra[IntentExtra.QUERY] = raw
+        }
+        return intent.copy(extra = newExtra)
+    }
+
+    // ── 4C Rule 1+2+3 ────────────────────────────────────────────────────
     private fun extractRecipientAndChannel(intent: ZaraIntent): ZaraIntent {
         val newExtra = intent.extra.toMutableMap()
 
-        // Rule 1: mirror target into RECIPIENT
         val recipient = intent.target
         if (recipient != null && !newExtra.containsKey(IntentExtra.RECIPIENT)) {
             newExtra[IntentExtra.RECIPIENT] = recipient
         }
 
-        // Rule 2: BODY preservation — no-op; BODY already in extra if present
-
-        // Rule 3: channel expansion — normalize extended channels from rawText
         if (!newExtra.containsKey(IntentExtra.CHANNEL)) {
             val t = intent.rawText.lowercase()
             val channel = when {
