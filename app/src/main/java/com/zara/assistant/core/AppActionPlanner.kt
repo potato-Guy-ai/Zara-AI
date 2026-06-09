@@ -4,11 +4,12 @@ import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
 
 /**
- * Layer 5.6 + 5 Hardening + Final Safety Fixes
+ * Layer 5.6 + 5 Hardening + Final Safety Fixes + B2.1 Fix
  *
- * FIX 3: Voice message inference expanded.
- * Triggers: "voice message to", "send voice message", "record a voice message",
- *           "record voice message", "send a voice message"
+ * B2.1 FIX: detectApp() no longer intercepts OPEN_APP intents for YouTube.
+ * If the intent action is OPEN_APP and the raw text contains no play/search verb,
+ * AppActionPlanner returns the intent unchanged — OPEN_APP flows directly to
+ * ActionExecutor.executeRaw() → AppActions.openApp() / launchByPackage().
  */
 object AppActionPlanner {
 
@@ -39,13 +40,15 @@ object AppActionPlanner {
 
     private val UNSUPPORTED_KEYWORDS = setOf("destroy", "hack", "delete system", "format", "root", "wipe")
 
-    // FIX 3: expanded voice message triggers
     private val VOICE_MESSAGE_TRIGGERS = listOf(
         "voice message to", "voice message for",
         "send voice message", "send a voice message",
         "record voice message", "record a voice message",
         "voice msg", "send voice msg"
     )
+
+    // B2.1: verbs that indicate media intent on YouTube — pure open/launch does NOT count
+    private val YOUTUBE_MEDIA_VERBS = listOf("play", "search", "watch", "find", "look up")
 
     fun plan(intent: ZaraIntent): ZaraIntent {
         val raw = intent.rawText.lowercase()
@@ -54,6 +57,13 @@ object AppActionPlanner {
             val newExtra = intent.extra.toMutableMap()
             newExtra["unsupported_command"] = "true"
             return intent.copy(extra = newExtra)
+        }
+
+        // B2.1 FIX: if this is a pure OPEN_APP intent (no media verb), skip planning entirely.
+        // Allows OPEN_APP to flow to executeRaw() → openApp() / launchByPackage() unchanged.
+        if (intent.action == IntentAction.OPEN_APP &&
+            YOUTUBE_MEDIA_VERBS.none { raw.contains(it) }) {
+            return intent
         }
 
         val app = detectApp(raw, intent) ?: return intent
@@ -88,7 +98,6 @@ object AppActionPlanner {
         val app = PreferredAppRegistry.preferred(intent.extra[IntentExtra.APP] ?: "")
         return when {
             raw.contains("whatsapp") || app == "whatsapp" || pkg.contains("whatsapp") -> APP_WHATSAPP
-            // FIX 3: voice message without explicit whatsapp still infers whatsapp
             VOICE_MESSAGE_TRIGGERS.any { raw.contains(it) }                          -> APP_WHATSAPP
             raw.contains("youtube")  || app == "youtube"  || pkg.contains("youtube")  -> APP_YOUTUBE
             raw.contains("spotify")  || app == "spotify"  || pkg.contains("spotify")  -> APP_MUSIC
@@ -100,7 +109,6 @@ object AppActionPlanner {
 
     private fun detectAction(app: String, raw: String): String = when (app) {
         APP_WHATSAPP -> when {
-            // FIX 3: check expanded triggers first
             VOICE_MESSAGE_TRIGGERS.any { raw.contains(it) } -> ACTION_VOICE_MESSAGE
             raw.contains("video call")                      -> ACTION_VIDEO_CALL
             raw.contains("audio call")                      -> ACTION_AUDIO_CALL
