@@ -1,19 +1,14 @@
 package com.zara.assistant.core
 
 /**
- * Layer 4A/4B/4C + Batch B1
+ * Layer 4A/4B/4C + B1 + B2.2
  *
- * Stateless, pure, no Android dependencies, no coroutines, no background work.
- * Deterministic regex/rule-based extraction only.
- *
- * Rules:
- *   4B-1. APP extraction       — last " on <app>" pattern
- *   4B-2. CONTENT/QUERY        — media content or navigation/search query
- *   4B-3. DURATION             — timer duration normalized to seconds
- *   4C-1. RECIPIENT            — mirrors target for CALL / SEND_SMS / SEND_WHATSAPP
- *   4C-2. BODY preservation    — BODY forwarded unchanged if already present
- *   4C-3. Channel expansion    — CHANNEL normalized for telegram/signal/messenger/discord
- *   B1.   SEARCH_QUERY         — extract app slot from "search X on youtube"
+ * B2.2: Added SET_ALARM slot extraction (ALARM_HOUR, ALARM_MINUTE).
+ * Supports:
+ *   "set alarm for 6 am"    -> ALARM_HOUR=6,  ALARM_MINUTE=0
+ *   "set alarm for 7:30 am" -> ALARM_HOUR=7,  ALARM_MINUTE=30
+ *   "set alarm at 5"        -> ALARM_HOUR=5,  ALARM_MINUTE=0
+ *   "create alarm for 8 pm" -> ALARM_HOUR=20, ALARM_MINUTE=0
  */
 object SlotExtractor {
 
@@ -22,12 +17,19 @@ object SlotExtractor {
         RegexOption.IGNORE_CASE
     )
 
+    // B2.2: matches "6 am", "7:30 am", "5", "8 pm", "17:00"
+    private val reAlarmTime = Regex(
+        "(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?",
+        RegexOption.IGNORE_CASE
+    )
+
     fun extract(intent: ZaraIntent): ZaraIntent {
         return when (intent.action) {
             IntentAction.PLAY_MUSIC    -> extractMedia(intent)
             IntentAction.NAVIGATE_TO   -> extractNavigation(intent)
             IntentAction.SET_TIMER     -> extractDuration(intent)
-            IntentAction.SEARCH_QUERY  -> extractSearch(intent)   // B1
+            IntentAction.SET_ALARM     -> extractAlarmTime(intent)  // B2.2
+            IntentAction.SEARCH_QUERY  -> extractSearch(intent)
             IntentAction.CALL,
             IntentAction.SEND_SMS,
             IntentAction.SEND_WHATSAPP -> extractRecipientAndChannel(intent)
@@ -35,39 +37,48 @@ object SlotExtractor {
         }
     }
 
-    // ── 4B Rule 1+2 (media) ─────────────────────────────────────────────
+    // B2.2: parse alarm time from rawText
+    private fun extractAlarmTime(intent: ZaraIntent): ZaraIntent {
+        val m = reAlarmTime.find(intent.rawText) ?: return intent
+        var hour   = m.groupValues[1].toIntOrNull() ?: return intent
+        val minute = m.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 0
+        val ampm   = m.groupValues[3].lowercase()
+        when {
+            ampm == "pm" && hour != 12 -> hour += 12
+            ampm == "am" && hour == 12 -> hour = 0
+        }
+        val newExtra = intent.extra.toMutableMap()
+        newExtra[IntentExtra.ALARM_HOUR]   = hour.toString()
+        newExtra[IntentExtra.ALARM_MINUTE] = minute.toString()
+        return intent.copy(extra = newExtra)
+    }
+
     private fun extractMedia(intent: ZaraIntent): ZaraIntent {
         val raw = intent.target ?: return intent
         val lastOnIdx = raw.lastIndexOf(" on ", ignoreCase = true)
         if (lastOnIdx < 0) return intent
-
         val content = raw.substring(0, lastOnIdx).trim()
         val app     = raw.substring(lastOnIdx + 4).trim()
         if (content.isEmpty() || app.isEmpty()) return intent
-
         val newExtra = intent.extra.toMutableMap()
         newExtra[IntentExtra.CONTENT] = content
         newExtra[IntentExtra.APP]     = app
         return intent.copy(extra = newExtra)
     }
 
-    // ── 4B Rule 1+2 (navigation) ────────────────────────────────────────
     private fun extractNavigation(intent: ZaraIntent): ZaraIntent {
         val raw = intent.target ?: return intent
         val lastOnIdx = raw.lastIndexOf(" on ", ignoreCase = true)
         if (lastOnIdx < 0) return intent
-
         val query = raw.substring(0, lastOnIdx).trim()
         val app   = raw.substring(lastOnIdx + 4).trim()
         if (query.isEmpty() || app.isEmpty()) return intent
-
         val newExtra = intent.extra.toMutableMap()
         newExtra[IntentExtra.QUERY] = query
         newExtra[IntentExtra.APP]   = app
         return intent.copy(extra = newExtra)
     }
 
-    // ── 4B Rule 3 ────────────────────────────────────────────────────────
     private fun extractDuration(intent: ZaraIntent): ZaraIntent {
         var totalSeconds = 0.0
         var found = false
@@ -87,9 +98,6 @@ object SlotExtractor {
         return intent.copy(extra = newExtra)
     }
 
-    // ── B1: Search slot extraction ───────────────────────────────────────
-    // "search cats on youtube" → QUERY=cats, APP=youtube
-    // "search cats" → QUERY=cats (no APP)
     private fun extractSearch(intent: ZaraIntent): ZaraIntent {
         val raw = intent.target ?: return intent
         val lastOnIdx = raw.lastIndexOf(" on ", ignoreCase = true)
@@ -105,15 +113,11 @@ object SlotExtractor {
         return intent.copy(extra = newExtra)
     }
 
-    // ── 4C Rule 1+2+3 ────────────────────────────────────────────────────
     private fun extractRecipientAndChannel(intent: ZaraIntent): ZaraIntent {
         val newExtra = intent.extra.toMutableMap()
-
         val recipient = intent.target
-        if (recipient != null && !newExtra.containsKey(IntentExtra.RECIPIENT)) {
+        if (recipient != null && !newExtra.containsKey(IntentExtra.RECIPIENT))
             newExtra[IntentExtra.RECIPIENT] = recipient
-        }
-
         if (!newExtra.containsKey(IntentExtra.CHANNEL)) {
             val t = intent.rawText.lowercase()
             val channel = when {
@@ -125,7 +129,6 @@ object SlotExtractor {
             }
             if (channel != null) newExtra[IntentExtra.CHANNEL] = channel
         }
-
         return intent.copy(extra = newExtra)
     }
 }

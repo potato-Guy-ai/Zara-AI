@@ -16,9 +16,7 @@ import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * Layer 5.7 + Final Safety Fixes + Batch B1
- *
- * B1: Added SEARCH_QUERY execution path in executeRaw.
+ * B2.2: Added SET_ALARM (with time), SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK execution paths.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -28,14 +26,8 @@ class ActionExecutor(private val context: Context) {
 
     suspend fun execute(intent: ZaraIntent): String {
         ZaraLogger.d("Executing: ${intent.action} target=${intent.target}")
-
-        if (intent.extra["unsupported_command"] == "true") {
-            return "Sorry, that command isn't supported."
-        }
-
-        if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") {
-            return handleClarificationNeeded(intent)
-        }
+        if (intent.extra["unsupported_command"] == "true") return "Sorry, that command isn\'t supported."
+        if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") return handleClarificationNeeded(intent)
 
         val contract: ExecutionContract? = ExecutionGuard.readContract(intent)
         if (contract != null) {
@@ -44,19 +36,15 @@ class ActionExecutor(private val context: Context) {
                     "open_app" -> {
                         val pkg  = intent.extra[IntentExtra.APP_PACKAGE]
                         val name = intent.extra[IntentExtra.APP_NAME] ?: contract.app
-                        if (pkg != null) appActions.launchByPackage(pkg, name)
-                        else appActions.openApp(contract.app)
+                        if (pkg != null) appActions.launchByPackage(pkg, name) else appActions.openApp(contract.app)
                     }
                     else -> "I need more information to do that."
                 }
             } else {
                 val result = executeContract(contract, intent)
                 ExecutionTelemetry.record(
-                    intent         = intent.action,
-                    confidence     = intent.extra[IntentExtra.ENTITY_CONFIDENCE],
-                    selectedApp    = contract.app,
-                    selectedContact = contract.target,
-                    executionResult = result
+                    intent = intent.action, confidence = intent.extra[IntentExtra.ENTITY_CONFIDENCE],
+                    selectedApp = contract.app, selectedContact = contract.target, executionResult = result
                 )
                 result
             }
@@ -81,10 +69,8 @@ class ActionExecutor(private val context: Context) {
                 "whatsapp" -> when (contract.action) {
                     AppActionPlanner.ACTION_VOICE_MESSAGE,
                     AppActionPlanner.ACTION_VIDEO_CALL,
-                    AppActionPlanner.ACTION_AUDIO_CALL ->
-                        appActions.sendWhatsApp(contract.target ?: return "Who?", "")
-                    AppActionPlanner.ACTION_MESSAGE ->
-                        appActions.sendWhatsApp(contract.target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
+                    AppActionPlanner.ACTION_AUDIO_CALL -> appActions.sendWhatsApp(contract.target ?: return "Who?", "")
+                    AppActionPlanner.ACTION_MESSAGE    -> appActions.sendWhatsApp(contract.target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
                     else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp("whatsapp")
                 }
                 "youtube" -> appActions.playMusic(contract.query ?: contract.target, "youtube")
@@ -95,7 +81,7 @@ class ActionExecutor(private val context: Context) {
             }
         } catch (e: Exception) {
             ZaraLogger.e("executeContract error: ${e.message}")
-            "Couldn't complete '${contract.action}' on ${contract.app}."
+            "Couldn\'t complete \'${contract.action}\' on ${contract.app}."
         }
     }
 
@@ -110,10 +96,8 @@ class ActionExecutor(private val context: Context) {
                 "whatsapp" -> when (action) {
                     AppActionPlanner.ACTION_VOICE_MESSAGE,
                     AppActionPlanner.ACTION_VIDEO_CALL,
-                    AppActionPlanner.ACTION_AUDIO_CALL ->
-                        appActions.sendWhatsApp(target ?: return "Who?", "")
-                    AppActionPlanner.ACTION_MESSAGE ->
-                        appActions.sendWhatsApp(target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
+                    AppActionPlanner.ACTION_AUDIO_CALL -> appActions.sendWhatsApp(target ?: return "Who?", "")
+                    AppActionPlanner.ACTION_MESSAGE    -> appActions.sendWhatsApp(target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
                     else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp("whatsapp")
                 }
                 "youtube" -> appActions.playMusic(query ?: target, "youtube")
@@ -130,10 +114,10 @@ class ActionExecutor(private val context: Context) {
 
     private suspend fun executeRaw(intent: ZaraIntent): String {
         return when (intent.action) {
-            IntentAction.CALL        -> callActions.call(intent.target ?: return "Who should I call?")
-            IntentAction.ANSWER_CALL -> callActions.answerCall()
-            IntentAction.END_CALL    -> callActions.endCall()
-            IntentAction.SEND_SMS    -> appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
+            IntentAction.CALL          -> callActions.call(intent.target ?: return "Who should I call?")
+            IntentAction.ANSWER_CALL   -> callActions.answerCall()
+            IntentAction.END_CALL      -> callActions.endCall()
+            IntentAction.SEND_SMS      -> appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
             IntentAction.SEND_WHATSAPP -> appActions.sendWhatsApp(intent.target ?: return "Who should I WhatsApp?", intent.extra[IntentExtra.BODY] ?: "")
             IntentAction.OPEN_APP -> {
                 val pkg  = intent.extra[IntentExtra.APP_PACKAGE]
@@ -141,23 +125,30 @@ class ActionExecutor(private val context: Context) {
                 if (pkg != null) appActions.launchByPackage(pkg, name) else appActions.openApp(intent.target ?: return "Which app?")
             }
             IntentAction.OPEN_CAMERA -> appActions.openCamera()
-            IntentAction.SET_ALARM   -> appActions.openAlarm()
-            IntentAction.SET_TIMER   -> {
+            // B2.2: SET_ALARM now uses time slots; fallback to openAlarm if no time parsed
+            IntentAction.SET_ALARM -> {
+                val hour   = intent.extra[IntentExtra.ALARM_HOUR]?.toIntOrNull()
+                val minute = intent.extra[IntentExtra.ALARM_MINUTE]?.toIntOrNull() ?: 0
+                if (hour != null) appActions.setAlarm(hour, minute) else appActions.openAlarm()
+            }
+            IntentAction.SET_TIMER -> {
                 val s = intent.extra[IntentExtra.DURATION]?.toLongOrNull()
                 if (s != null) appActions.setTimer(s) else appActions.openAlarm()
             }
-            IntentAction.PLAY_MUSIC  -> {
+            // B2.2: clock utilities
+            IntentAction.SHOW_ALARMS -> appActions.showAlarms()
+            IntentAction.SHOW_TIMERS -> appActions.showTimers()
+            IntentAction.OPEN_CLOCK  -> appActions.openClock()
+            IntentAction.PLAY_MUSIC -> {
                 val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
                 val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
                 val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
                 if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
                 else appActions.playMusic(content, intent.extra[IntentExtra.APP])
             }
-            // B1: SEARCH_QUERY execution
             IntentAction.SEARCH_QUERY -> {
-                val query = intent.extra[IntentExtra.QUERY] ?: intent.target
-                    ?: return "What would you like to search for?"
-                val app = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
+                val query = intent.extra[IntentExtra.QUERY] ?: intent.target ?: return "What would you like to search for?"
+                val app   = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
                 appActions.search(query, app)
             }
             IntentAction.NAVIGATE_TO -> {
@@ -170,7 +161,7 @@ class ActionExecutor(private val context: Context) {
             IntentAction.SET_VOLUME     -> mediaActions.adjustVolume(intent.extra[IntentExtra.DIRECTION] ?: "up")
             IntentAction.SET_SILENT     -> mediaActions.setSilentMode(intent.extra[IntentExtra.ON] == "true", intent.extra[IntentExtra.MODE] ?: "silent")
             IntentAction.LOCK_SCREEN    -> mediaActions.lockScreen()
-            else -> "I don't know how to do '${intent.action}' yet."
+            else -> "I don\'t know how to do \'${intent.action}\' yet."
         }
     }
 
@@ -185,8 +176,7 @@ class ActionExecutor(private val context: Context) {
             ?.split("|")
             ?.filter { it.isNotBlank() }
             ?: emptyList()
-        if (rawCandidates.isEmpty()) return "I'm not sure who or what you mean."
-
+        if (rawCandidates.isEmpty()) return "I\'m not sure who or what you mean."
         if (!ClarificationManager.hasPending()) {
             val entityType = when (intent.action) {
                 IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT

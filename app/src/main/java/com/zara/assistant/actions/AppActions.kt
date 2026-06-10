@@ -6,6 +6,9 @@ import android.net.Uri
 import android.provider.AlarmClock
 import com.zara.assistant.utils.ZaraLogger
 
+/**
+ * B2.2: Added setAlarm(), showAlarms(), showTimers(), openClock().
+ */
 class AppActions(private val context: Context) {
 
     private var appCache: Map<String, String>? = null
@@ -38,20 +41,20 @@ class AppActions(private val context: Context) {
                 val list = result.candidates.take(5).mapIndexed { i, s -> "${i+1}. $s" }.joinToString(", ")
                 "Did you mean: $list?"
             }
-            else -> "I couldn't find an installed app called '$name'."
+            else -> "I couldn\'t find an installed app called \'$name\'."
         }
     }
 
     private fun launchPackage(pkg: String, displayName: String): String {
         return try {
             val intent = context.packageManager.getLaunchIntentForPackage(pkg)
-                ?: return "'$displayName' is installed but can't be launched."
+                ?: return "\'$displayName\' is installed but can\'t be launched."
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
             "Opening $displayName."
         } catch (e: Exception) {
             ZaraLogger.e("launchPackage: ${e.message}")
-            "Couldn't open $displayName."
+            "Couldn\'t open $displayName."
         }
     }
 
@@ -67,16 +70,16 @@ class AppActions(private val context: Context) {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-            if (number != null) "Opening SMS to $contact." else "Opening SMS. Couldn't resolve '$contact'."
+            if (number != null) "Opening SMS to $contact." else "Opening SMS. Couldn\'t resolve \'$contact\'."
         } catch (e: Exception) {
             ZaraLogger.e("sendSms: ${e.message}")
-            "Couldn't open SMS app."
+            "Couldn\'t open SMS app."
         }
     }
 
     suspend fun sendWhatsApp(contact: String, body: String): String {
         val number = ContactResolver(context).resolveNumber(contact)
-            ?: return "I couldn't find '$contact' in your contacts to WhatsApp."
+            ?: return "I couldn\'t find \'$contact\' in your contacts to WhatsApp."
         val cleaned = number.filter { it.isDigit() }
         return try {
             val uri = Uri.parse("https://wa.me/$cleaned?text=${Uri.encode(body)}")
@@ -85,11 +88,11 @@ class AppActions(private val context: Context) {
             "Opening WhatsApp to message $contact."
         } catch (e: Exception) {
             ZaraLogger.e("sendWhatsApp: ${e.message}")
-            "Couldn't open WhatsApp. Make sure it's installed."
+            "Couldn\'t open WhatsApp. Make sure it\'s installed."
         }
     }
 
-    // ── Camera / Alarm / Timer ────────────────────────────────────────────
+    // ── Camera ────────────────────────────────────────────────────────────
 
     fun openCamera(): String {
         return try {
@@ -98,16 +101,76 @@ class AppActions(private val context: Context) {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
             "Opening camera."
-        } catch (e: Exception) { "Couldn't open camera." }
+        } catch (e: Exception) { "Couldn\'t open camera." }
     }
 
+    // ── Alarm / Timer / Clock ─────────────────────────────────────────────
+
+    /**
+     * B2.2: Set a specific alarm using AlarmClock.ACTION_SET_ALARM.
+     * hour: 0-23, minute: 0-59.
+     */
+    fun setAlarm(hour: Int, minute: Int): String {
+        return try {
+            val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+                putExtra(AlarmClock.EXTRA_HOUR, hour)
+                putExtra(AlarmClock.EXTRA_MINUTES, minute)
+                putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            val ampm  = if (hour < 12) "AM" else "PM"
+            val h12   = when { hour == 0 -> 12; hour > 12 -> hour - 12; else -> hour }
+            val minStr = minute.toString().padStart(2, '0')
+            "Alarm set for $h12:$minStr $ampm."
+        } catch (e: Exception) {
+            ZaraLogger.e("setAlarm: ${e.message}")
+            openAlarm()
+        }
+    }
+
+    /** B2.2: Show existing alarms list. */
+    fun showAlarms(): String {
+        return try {
+            context.startActivity(
+                Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            "Here are your alarms."
+        } catch (e: Exception) { "Couldn\'t open alarms."
+        }
+    }
+
+    /** B2.2: Show timer screen (ACTION_SHOW_TIMERS API 26+, fallback to SHOW_ALARMS). */
+    fun showTimers(): String {
+        return try {
+            val intent = if (android.os.Build.VERSION.SDK_INT >= 26) {
+                Intent(AlarmClock.ACTION_SHOW_TIMERS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            } else {
+                Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            "Here are your timers."
+        } catch (e: Exception) { "Couldn\'t open timers." }
+    }
+
+    /** B2.2: Open the clock app. */
+    fun openClock(): String {
+        return try {
+            context.startActivity(
+                Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+            "Opening clock."
+        } catch (e: Exception) { "Couldn\'t open clock." }
+    }
+
+    /** Legacy: open alarm list (used as fallback). */
     fun openAlarm(): String {
         return try {
             context.startActivity(
                 Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             )
             "Opening clock."
-        } catch (e: Exception) { "Couldn't open clock." }
+        } catch (e: Exception) { "Couldn\'t open clock." }
     }
 
     fun setTimer(seconds: Long): String {
@@ -133,11 +196,7 @@ class AppActions(private val context: Context) {
 
     // ── Navigation ────────────────────────────────────────────────────────
 
-    fun navigateTo(
-        destination: String,
-        preferredPackage: String? = null,
-        preferredApp: String? = null
-    ): String {
+    fun navigateTo(destination: String, preferredPackage: String? = null, preferredApp: String? = null): String {
         return try {
             val appHint = preferredApp?.lowercase()
             val uri = when {
@@ -160,31 +219,22 @@ class AppActions(private val context: Context) {
             "Navigating to $destination."
         } catch (e: Exception) {
             ZaraLogger.e("navigateTo: ${e.message}")
-            "Couldn't open navigation."
+            "Couldn\'t open navigation."
         }
     }
 
     // ── Music ─────────────────────────────────────────────────────────────
 
-    /**
-     * B2 fix: Spotify deep-link URI (spotify:search:query) does not resolve via
-     * queryIntentActivities with setPackage on all devices. Fire the intent directly
-     * and catch any ActivityNotFoundException. Fallback to app launch.
-     */
     fun playMusicByPackage(pkg: String, appName: String?, query: String?): String {
         return try {
             if (query != null) {
                 val searchUri = when {
                     pkg.contains("spotify") -> Uri.parse("spotify:search:${Uri.encode(query)}")
-                    pkg.contains("youtube") -> Uri.parse(
-                        "https://www.youtube.com/results?search_query=${Uri.encode(query)}"
-                    )
+                    pkg.contains("youtube") -> Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
                     else -> null
                 }
                 if (searchUri != null) {
-                    val intent = Intent(Intent.ACTION_VIEW, searchUri)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    // B2 fix: set package only for Spotify (deep link); YouTube uses browser/app chooser
+                    val intent = Intent(Intent.ACTION_VIEW, searchUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     if (pkg.contains("spotify")) intent.setPackage(pkg)
                     try {
                         context.startActivity(intent)
@@ -194,7 +244,6 @@ class AppActions(private val context: Context) {
                     }
                 }
             }
-            // Fallback: launch app directly
             launchPackage(pkg, appName ?: pkg)
         } catch (e: Exception) {
             ZaraLogger.e("playMusicByPackage: ${e.message}")
@@ -207,12 +256,9 @@ class AppActions(private val context: Context) {
         return try {
             if (appLower == null || appLower.contains("spotify")) {
                 if (query != null) {
-                    // B2 fix: fire Spotify URI directly, no queryIntentActivities gate
                     try {
-                        val spotifyIntent = Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse("spotify:search:${Uri.encode(query)}")
-                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        val spotifyIntent = Intent(Intent.ACTION_VIEW, Uri.parse("spotify:search:${Uri.encode(query)}"))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                         context.startActivity(spotifyIntent)
                         return "Playing $query on Spotify."
                     } catch (ignored: Exception) {
@@ -237,73 +283,54 @@ class AppActions(private val context: Context) {
             if (query != null) "Playing $query." else "Opening music."
         } catch (e: Exception) {
             ZaraLogger.e("playMusic: ${e.message}")
-            "Couldn't open music app."
+            "Couldn\'t open music app."
         }
     }
 
-    // ── B1: YouTube search ───────────────────────────────────────────────
+    // ── Search ────────────────────────────────────────────────────────────
 
-    /**
-     * Opens YouTube with a search query.
-     * Tries YouTube app deep link first, then web URL fallback.
-     */
     fun searchYouTube(query: String): String {
         return try {
-            // YouTube app supports this URI scheme
             val ytPkg = getAppCache()["youtube"]
             if (ytPkg != null) {
                 try {
-                    val intent = Intent(
-                        Intent.ACTION_SEARCH,
-                        Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
-                    ).setPackage(ytPkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    val intent = Intent(Intent.ACTION_SEARCH,
+                        Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}"))
+                        .setPackage(ytPkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(intent)
                     return "Searching YouTube for $query."
-                } catch (ignored: Exception) {
-                    // try web fallback
-                }
+                } catch (ignored: Exception) { }
                 try {
-                    val browserIntent = Intent(
-                        Intent.ACTION_VIEW,
-                        Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
-                    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    val browserIntent = Intent(Intent.ACTION_VIEW,
+                        Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     context.startActivity(browserIntent)
                     return "Searching YouTube for $query."
                 } catch (ignored: Exception) { }
             }
-            // No YouTube app — open browser
-            val browserIntent = Intent(
-                Intent.ACTION_VIEW,
-                Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val browserIntent = Intent(Intent.ACTION_VIEW,
+                Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(browserIntent)
             "Searching YouTube for $query."
         } catch (e: Exception) {
             ZaraLogger.e("searchYouTube: ${e.message}")
-            "Couldn't search YouTube."
+            "Couldn\'t search YouTube."
         }
     }
 
-    /**
-     * B1: Generic web/app search.
-     * If APP slot specifies youtube → searchYouTube.
-     * Otherwise opens web search.
-     */
     fun search(query: String, app: String? = null): String {
         val appLower = app?.lowercase()
         return when {
-            appLower != null && (appLower.contains("youtube") || appLower == "yt") ->
-                searchYouTube(query)
+            appLower != null && (appLower.contains("youtube") || appLower == "yt") -> searchYouTube(query)
             else -> {
                 try {
                     val uri = Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")
-                    val intent = Intent(Intent.ACTION_VIEW, uri)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(intent)
+                    context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                     "Searching for $query."
                 } catch (e: Exception) {
                     ZaraLogger.e("search: ${e.message}")
-                    "Couldn't perform search."
+                    "Couldn\'t perform search."
                 }
             }
         }
