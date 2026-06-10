@@ -5,6 +5,10 @@ package com.zara.assistant.core
  *  - Fixed reSearch groupValues index bug: was [2], must be [1] (only one capture group)
  *  - Added SET_ALARM with time detection (vs reAlarm which was open-only)
  *  - Added SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK clock utility intents
+ *
+ * B2.3 fix:
+ *  - reSearch evaluated BEFORE reKnowledge so explicit "search/find/look up" commands
+ *    are never stolen by the knowledge/cloud fallback path.
  */
 class LocalIntentClassifier {
 
@@ -28,7 +32,7 @@ class LocalIntentClassifier {
     private val reOpenVerb    = Regex("(?:open|launch|start|switch to|go to app)\\s+(.+)")
     private val reOpenTrigger = Regex(".*(open|launch|start|switch to|go to app).*")
 
-    // B2.2: search fix — one capture group, use groupValues[1]
+    // B2.3: reSearch evaluated before reKnowledge (see classify())
     private val reSearch = Regex("(?:search(?: for)?|find|look(?:ing)? (?:up|for))\\s+(.+)")
 
     private val reWifi        = Regex(".*(wi.?fi).*")
@@ -38,13 +42,10 @@ class LocalIntentClassifier {
     private val reLock        = Regex(".*(lock).*(phone|screen|device).*")
     private val reCamera      = Regex(".*(take photo|take picture|open camera|selfie|capture).*")
 
-    // B2.2: alarm with time = SET_ALARM; bare timer = SET_TIMER
-    // reAlarmWithTime: must have a time token (digit or am/pm)
     private val reAlarmWithTime = Regex(".*(set|create|add).*(alarm).*(\\d|am|pm).*")
     private val reAlarmBare     = Regex(".*(set|create|add).*(alarm).*")
     private val reTimer         = Regex(".*(set|start|create).*(timer).*")
 
-    // B2.2: clock utility
     private val reShowAlarms  = Regex(".*(show|list|view|see).*(alarms?).*")
     private val reShowTimers  = Regex(".*(show|list|view|see).*(timers?).*")
     private val reOpenClock   = Regex(".*(open|launch).*(clock).*")
@@ -68,6 +69,13 @@ class LocalIntentClassifier {
         if (text.isBlank()) return unknown(text)
         val t = text.lowercase().trim()
 
+        // B2.3 FIX: explicit search/find/look-up commands checked BEFORE reKnowledge
+        // Prevents "search how to make a cake on youtube" being stolen by knowledge/cloud path
+        reSearch.find(t)?.let { m ->
+            val query = m.groupValues[1].trim()
+            if (query.isNotBlank()) return action(IntentAction.SEARCH_QUERY, text, target = query)
+        }
+
         if (reKnowledge.matches(t)) return cloudIntent(text)
 
         if (reAnswerCall.matches(t)) return action(IntentAction.ANSWER_CALL, text)
@@ -90,7 +98,6 @@ class LocalIntentClassifier {
         }
 
         if (reOpenTrigger.matches(t)) {
-            // B2.2: clock utility — check before generic open
             if (reOpenClock.matches(t))  return action(IntentAction.OPEN_CLOCK, text)
             reOpenVerb.find(t)?.let { m ->
                 val appName = m.groupValues[1].trim()
@@ -100,7 +107,6 @@ class LocalIntentClassifier {
 
         if (reCamera.matches(t)) return action(IntentAction.OPEN_CAMERA, text)
 
-        // B2.2: alarm with time → SET_ALARM; bare alarm → SHOW_ALARMS
         if (reShowAlarms.matches(t)) return action(IntentAction.SHOW_ALARMS, text)
         if (reShowTimers.matches(t)) return action(IntentAction.SHOW_TIMERS, text)
         if (reAlarmWithTime.matches(t)) return action(IntentAction.SET_ALARM, text)
@@ -120,12 +126,6 @@ class LocalIntentClassifier {
         if (reVolume.matches(t)) {
             val dir = if (t.contains("up") || t.contains("max") || t.contains("raise") || t.contains("increase")) "up" else "down"
             return action(IntentAction.SET_VOLUME, text, extra = mapOf(IntentExtra.DIRECTION to dir))
-        }
-
-        // B2.2 FIX: groupValues[1] (was [2] — bug)
-        reSearch.find(t)?.let { m ->
-            val query = m.groupValues[1].trim()
-            if (query.isNotBlank()) return action(IntentAction.SEARCH_QUERY, text, target = query)
         }
 
         if (reTime.matches(t))     return conv(IntentAction.TIME, text)
