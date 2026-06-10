@@ -28,9 +28,6 @@ object IntentAction {
     const val OPEN_CAMERA    = "OPEN_CAMERA"
     const val SET_ALARM      = "SET_ALARM"
     const val SET_TIMER      = "SET_TIMER"
-    const val SHOW_ALARMS    = "SHOW_ALARMS"   // B2.2: open alarm list
-    const val SHOW_TIMERS    = "SHOW_TIMERS"   // B2.2: open timer screen
-    const val OPEN_CLOCK     = "OPEN_CLOCK"    // B2.2: open clock app
     const val SET_WIFI       = "SET_WIFI"
     const val SET_BLUETOOTH  = "SET_BLUETOOTH"
     const val SET_FLASHLIGHT = "SET_FLASHLIGHT"
@@ -41,6 +38,10 @@ object IntentAction {
     const val NAVIGATE_TO    = "NAVIGATE_TO"
     const val PLAY_MUSIC     = "PLAY_MUSIC"
     const val SEARCH_QUERY   = "SEARCH_QUERY"
+    // B2.2: clock utility
+    const val SHOW_ALARMS    = "SHOW_ALARMS"
+    const val SHOW_TIMERS    = "SHOW_TIMERS"
+    const val OPEN_CLOCK     = "OPEN_CLOCK"
     const val TIME           = "TIME"
     const val DATE           = "DATE"
     const val GREETING       = "GREETING"
@@ -60,13 +61,13 @@ object IntentExtra {
     const val SONG        = "song"
     const val ARTIST      = "artist"
     const val TIME        = "time"
+    // B2.2: alarm time slots
+    const val ALARM_HOUR   = "alarm_hour"
+    const val ALARM_MINUTE = "alarm_minute"
     const val DESTINATION = "destination"
     const val QUERY       = "query"
     const val CONTENT     = "content"
     const val RECIPIENT   = "recipient"
-    // B2.2: alarm time slots
-    const val ALARM_HOUR   = "alarm_hour"    // 0-23
-    const val ALARM_MINUTE = "alarm_minute"  // 0-59
     const val CONTACT_NAME       = "contact_name"
     const val PHONE_NUMBER       = "phone_number"
     const val APP_PACKAGE        = "app_package"

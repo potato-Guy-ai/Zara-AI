@@ -16,7 +16,7 @@ import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * B2.2: Added SET_ALARM (with time), SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK execution paths.
+ * B2.2: Added SET_ALARM with hour/minute, SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK in executeRaw.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -42,10 +42,7 @@ class ActionExecutor(private val context: Context) {
                 }
             } else {
                 val result = executeContract(contract, intent)
-                ExecutionTelemetry.record(
-                    intent = intent.action, confidence = intent.extra[IntentExtra.ENTITY_CONFIDENCE],
-                    selectedApp = contract.app, selectedContact = contract.target, executionResult = result
-                )
+                ExecutionTelemetry.record(intent = intent.action, confidence = intent.extra[IntentExtra.ENTITY_CONFIDENCE], selectedApp = contract.app, selectedContact = contract.target, executionResult = result)
                 result
             }
         }
@@ -53,12 +50,7 @@ class ActionExecutor(private val context: Context) {
         val planApp = intent.extra[AppActionPlanner.KEY_APP]
         if (planApp != null) return executePlan(intent, planApp)
 
-        return try {
-            executeRaw(intent)
-        } catch (e: Exception) {
-            ZaraLogger.e("ActionExecutor error: ${e.message}")
-            "Something went wrong executing that."
-        }
+        return try { executeRaw(intent) } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
     }
 
     private suspend fun executeContract(contract: ExecutionContract, intent: ZaraIntent): String {
@@ -67,10 +59,10 @@ class ActionExecutor(private val context: Context) {
         return try {
             when (contract.app) {
                 "whatsapp" -> when (contract.action) {
-                    AppActionPlanner.ACTION_VOICE_MESSAGE,
-                    AppActionPlanner.ACTION_VIDEO_CALL,
-                    AppActionPlanner.ACTION_AUDIO_CALL -> appActions.sendWhatsApp(contract.target ?: return "Who?", "")
-                    AppActionPlanner.ACTION_MESSAGE    -> appActions.sendWhatsApp(contract.target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
+                    AppActionPlanner.ACTION_VOICE_MESSAGE, AppActionPlanner.ACTION_VIDEO_CALL, AppActionPlanner.ACTION_AUDIO_CALL ->
+                        appActions.sendWhatsApp(contract.target ?: return "Who?", "")
+                    AppActionPlanner.ACTION_MESSAGE ->
+                        appActions.sendWhatsApp(contract.target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
                     else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp("whatsapp")
                 }
                 "youtube" -> appActions.playMusic(contract.query ?: contract.target, "youtube")
@@ -79,10 +71,7 @@ class ActionExecutor(private val context: Context) {
                              else appActions.playMusic(contract.query ?: contract.target, appName)
                 else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp(contract.app)
             }
-        } catch (e: Exception) {
-            ZaraLogger.e("executeContract error: ${e.message}")
-            "Couldn\'t complete \'${contract.action}\' on ${contract.app}."
-        }
+        } catch (e: Exception) { ZaraLogger.e("executeContract: ${e.message}"); "Couldn\'t complete \'${contract.action}\' on ${contract.app}." }
     }
 
     private suspend fun executePlan(intent: ZaraIntent, app: String): String {
@@ -94,10 +83,10 @@ class ActionExecutor(private val context: Context) {
         return try {
             when (app) {
                 "whatsapp" -> when (action) {
-                    AppActionPlanner.ACTION_VOICE_MESSAGE,
-                    AppActionPlanner.ACTION_VIDEO_CALL,
-                    AppActionPlanner.ACTION_AUDIO_CALL -> appActions.sendWhatsApp(target ?: return "Who?", "")
-                    AppActionPlanner.ACTION_MESSAGE    -> appActions.sendWhatsApp(target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
+                    AppActionPlanner.ACTION_VOICE_MESSAGE, AppActionPlanner.ACTION_VIDEO_CALL, AppActionPlanner.ACTION_AUDIO_CALL ->
+                        appActions.sendWhatsApp(target ?: return "Who?", "")
+                    AppActionPlanner.ACTION_MESSAGE ->
+                        appActions.sendWhatsApp(target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
                     else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp("whatsapp")
                 }
                 "youtube" -> appActions.playMusic(query ?: target, "youtube")
@@ -106,10 +95,7 @@ class ActionExecutor(private val context: Context) {
                              else appActions.playMusic(query ?: target, appName)
                 else -> executeFallback(intent)
             }
-        } catch (e: Exception) {
-            ZaraLogger.e("executePlan error: ${e.message}")
-            "Something went wrong."
-        }
+        } catch (e: Exception) { ZaraLogger.e("executePlan: ${e.message}"); "Something went wrong." }
     }
 
     private suspend fun executeRaw(intent: ZaraIntent): String {
@@ -125,7 +111,7 @@ class ActionExecutor(private val context: Context) {
                 if (pkg != null) appActions.launchByPackage(pkg, name) else appActions.openApp(intent.target ?: return "Which app?")
             }
             IntentAction.OPEN_CAMERA -> appActions.openCamera()
-            // B2.2: SET_ALARM now uses time slots; fallback to openAlarm if no time parsed
+            // B2.2: SET_ALARM uses extracted hour/minute
             IntentAction.SET_ALARM -> {
                 val hour   = intent.extra[IntentExtra.ALARM_HOUR]?.toIntOrNull()
                 val minute = intent.extra[IntentExtra.ALARM_MINUTE]?.toIntOrNull() ?: 0
@@ -136,10 +122,10 @@ class ActionExecutor(private val context: Context) {
                 if (s != null) appActions.setTimer(s) else appActions.openAlarm()
             }
             // B2.2: clock utilities
-            IntentAction.SHOW_ALARMS -> appActions.showAlarms()
+            IntentAction.SHOW_ALARMS -> appActions.openAlarm()
             IntentAction.SHOW_TIMERS -> appActions.showTimers()
-            IntentAction.OPEN_CLOCK  -> appActions.openClock()
-            IntentAction.PLAY_MUSIC -> {
+            IntentAction.OPEN_CLOCK  -> appActions.openAlarm()
+            IntentAction.PLAY_MUSIC  -> {
                 val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
                 val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
                 val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
@@ -172,24 +158,14 @@ class ActionExecutor(private val context: Context) {
     }
 
     private fun handleClarificationNeeded(intent: ZaraIntent): String {
-        val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]
-            ?.split("|")
-            ?.filter { it.isNotBlank() }
-            ?: emptyList()
+        val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]?.split("|")?.filter { it.isNotBlank() } ?: emptyList()
         if (rawCandidates.isEmpty()) return "I\'m not sure who or what you mean."
         if (!ClarificationManager.hasPending()) {
             val entityType = when (intent.action) {
                 IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
                 else -> ClarificationEntityType.APP
             }
-            ClarificationManager.store(
-                PendingClarification(
-                    clarificationId = UUID.randomUUID().toString(),
-                    originalIntent  = intent,
-                    entityType      = entityType,
-                    candidates      = rawCandidates.map { ClarificationCandidate(it, it) }
-                )
-            )
+            ClarificationManager.store(PendingClarification(clarificationId = UUID.randomUUID().toString(), originalIntent = intent, entityType = entityType, candidates = rawCandidates.map { ClarificationCandidate(it, it) }))
         }
         val list = rawCandidates.mapIndexed { i, s -> "${i + 1}. $s" }.joinToString(", ")
         return "I found multiple matches: $list. Which one did you mean?"

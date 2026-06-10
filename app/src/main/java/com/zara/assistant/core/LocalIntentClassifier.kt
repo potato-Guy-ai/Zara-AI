@@ -1,8 +1,10 @@
 package com.zara.assistant.core
 
 /**
- * B2.2: Added SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK intents.
- *       Fixed SEARCH_QUERY groupValues index (was [2], now [1]).
+ * B2.2 changes:
+ *  - Fixed reSearch groupValues index bug: was [2], must be [1] (only one capture group)
+ *  - Added SET_ALARM with time detection (vs reAlarm which was open-only)
+ *  - Added SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK clock utility intents
  */
 class LocalIntentClassifier {
 
@@ -10,9 +12,11 @@ class LocalIntentClassifier {
         ".*(how (do|does|can|would|to)|what is|what are|explain|tell me about|" +
         "describe|difference between|meaning of|definition of|understand).*"
     )
+
     private val reCallAction = Regex("(?:call|dial|phone|ring|make (?:a )?call (?:to|for))\\s+(.+)")
     private val reAnswerCall = Regex(".*(answer|pick up).*(call).*")
     private val reEndCall    = Regex(".*(hang up|end call|end the call|reject call|disconnect).*")
+
     private val reWhatsappChannel = Regex(".*whatsapp.*")
     private val reSmsChannel      = Regex(".*(send sms|send a text|text message|sms to).*")
     private val reMsgVerb    = Regex(
@@ -20,101 +24,123 @@ class LocalIntentClassifier {
         RegexOption.IGNORE_CASE
     )
     private val reMsgFallback = Regex("(?:message|text|whatsapp|msg)\\s+(.+)")
+
     private val reOpenVerb    = Regex("(?:open|launch|start|switch to|go to app)\\s+(.+)")
     private val reOpenTrigger = Regex(".*(open|launch|start|switch to|go to app).*")
-    // FIX: group [1], not [2]
-    private val reSearch      = Regex("(?:search(?: for)?|find|look(?:ing)? (?:up|for))\\s+(.+)")
+
+    // B2.2: search fix — one capture group, use groupValues[1]
+    private val reSearch = Regex("(?:search(?: for)?|find|look(?:ing)? (?:up|for))\\s+(.+)")
+
     private val reWifi        = Regex(".*(wi.?fi).*")
     private val reBluetooth   = Regex(".*(bluetooth|bt).*")
     private val reFlashlight  = Regex(".*(flashlight|torch).*")
     private val reVolume      = Regex(".*(volume|vol).*(up|down|max|low|raise|lower|increase|decrease).*")
     private val reLock        = Regex(".*(lock).*(phone|screen|device).*")
     private val reCamera      = Regex(".*(take photo|take picture|open camera|selfie|capture).*")
-    // B2.2: clock utilities (checked BEFORE reAlarm/reTimer)
-    private val reShowAlarms  = Regex(".*(show|list|view|display).*(alarm).*")
-    private val reShowTimers  = Regex(".*(show|list|view|display).*(timer).*")
+
+    // B2.2: alarm with time = SET_ALARM; bare timer = SET_TIMER
+    // reAlarmWithTime: must have a time token (digit or am/pm)
+    private val reAlarmWithTime = Regex(".*(set|create|add).*(alarm).*(\\d|am|pm).*")
+    private val reAlarmBare     = Regex(".*(set|create|add).*(alarm).*")
+    private val reTimer         = Regex(".*(set|start|create).*(timer).*")
+
+    // B2.2: clock utility
+    private val reShowAlarms  = Regex(".*(show|list|view|see).*(alarms?).*")
+    private val reShowTimers  = Regex(".*(show|list|view|see).*(timers?).*")
     private val reOpenClock   = Regex(".*(open|launch).*(clock).*")
-    private val reAlarm       = Regex(".*(set|create|add).*(alarm).*")
-    private val reTimer       = Regex(".*(set|start|create).*(timer).*")
+
     private val reNavigate    = Regex(".*(navigate to|directions to|take me to|drive to)\\s+(.+)")
     private val rePlay        = Regex("(?:play|listen to)\\s+(.+)")
-    private val reSilentOn    = Regex(".*(turn on silent|enable silent|silent mode|put on silent|do not disturb|dnd|^mute$|^mute everything$).*")
-    private val reSilentOff   = Regex(".*(turn off silent|disable silent|normal mode|ring mode|ringer on|unmute).*")
-    private val reVibrate     = Regex(".*(vibrate mode|enable vibrate|turn on vibrate|set to vibrate).*")
-    private val reOffKeyword  = Regex(".*(turn off|switch off|disable|deactivate).*")
-    private val reOnKeyword   = Regex(".*(turn on|switch on|enable|activate).*")
-    private val reTime        = Regex(".*(what.?s the time|what time|current time|time now|time is it).*")
-    private val reDate        = Regex(".*(what.?s the date|what date|today.?s date|what day|day is it).*")
-    private val reGreeting    = Regex(".*(how are you|you okay|you good|hey zara|hello zara|hi zara).*")
-    private val reStop        = Regex(".*(stop listening|go to sleep|goodbye|bye zara|shut up|cancel|never mind).*")
+
+    private val reSilentOn  = Regex(".*(turn on silent|enable silent|silent mode|put on silent|do not disturb|dnd|^mute$|^mute everything$).*")
+    private val reSilentOff = Regex(".*(turn off silent|disable silent|normal mode|ring mode|ringer on|unmute).*")
+    private val reVibrate   = Regex(".*(vibrate mode|enable vibrate|turn on vibrate|set to vibrate).*")
+
+    private val reOffKeyword = Regex(".*(turn off|switch off|disable|deactivate).*")
+    private val reOnKeyword  = Regex(".*(turn on|switch on|enable|activate).*")
+
+    private val reTime     = Regex(".*(what.?s the time|what time|current time|time now|time is it).*")
+    private val reDate     = Regex(".*(what.?s the date|what date|today.?s date|what day|day is it).*")
+    private val reGreeting = Regex(".*(how are you|you okay|you good|hey zara|hello zara|hi zara).*")
+    private val reStop     = Regex(".*(stop listening|go to sleep|goodbye|bye zara|shut up|cancel|never mind).*")
 
     fun classify(text: String): ZaraIntent {
         if (text.isBlank()) return unknown(text)
         val t = text.lowercase().trim()
 
         if (reKnowledge.matches(t)) return cloudIntent(text)
+
         if (reAnswerCall.matches(t)) return action(IntentAction.ANSWER_CALL, text)
         if (reEndCall.matches(t))    return action(IntentAction.END_CALL, text)
         reCallAction.find(t)?.let { m ->
             val target = m.groupValues[1].trim()
             if (target.isNotBlank()) return action(IntentAction.CALL, text, target = target)
         }
+
         if (isMessageIntent(t)) return messageIntent(t, text)
+
         reNavigate.find(t)?.let { m ->
             val dest = m.groupValues[2].trim()
             if (dest.isNotBlank()) return action(IntentAction.NAVIGATE_TO, text, target = dest)
         }
+
         rePlay.find(t)?.let { m ->
             val query = m.groupValues[1].trim()
             if (query.isNotBlank()) return action(IntentAction.PLAY_MUSIC, text, target = query)
         }
+
         if (reOpenTrigger.matches(t)) {
-            // B2.2: clock utilities checked inside open trigger
-            if (reOpenClock.matches(t)) return action(IntentAction.OPEN_CLOCK, text)
+            // B2.2: clock utility — check before generic open
+            if (reOpenClock.matches(t))  return action(IntentAction.OPEN_CLOCK, text)
             reOpenVerb.find(t)?.let { m ->
                 val appName = m.groupValues[1].trim()
                 if (appName.isNotBlank()) return action(IntentAction.OPEN_APP, text, target = appName)
             }
         }
+
         if (reCamera.matches(t)) return action(IntentAction.OPEN_CAMERA, text)
-        // B2.2: show alarms/timers before set alarm/timer
+
+        // B2.2: alarm with time → SET_ALARM; bare alarm → SHOW_ALARMS
         if (reShowAlarms.matches(t)) return action(IntentAction.SHOW_ALARMS, text)
         if (reShowTimers.matches(t)) return action(IntentAction.SHOW_TIMERS, text)
-        if (reAlarm.matches(t)) return action(IntentAction.SET_ALARM, text)
-        if (reTimer.matches(t)) return action(IntentAction.SET_TIMER, text)
-        if (reLock.matches(t))  return action(IntentAction.LOCK_SCREEN, text)
-        if (reSilentOff.matches(t)) return action(IntentAction.SET_SILENT, text,
-            extra = mapOf(IntentExtra.ON to "false", IntentExtra.MODE to "normal"))
-        if (reVibrate.matches(t))   return action(IntentAction.SET_SILENT, text,
-            extra = mapOf(IntentExtra.ON to "true", IntentExtra.MODE to "vibrate"))
-        if (reSilentOn.matches(t))  return action(IntentAction.SET_SILENT, text,
-            extra = mapOf(IntentExtra.ON to "true", IntentExtra.MODE to "silent"))
+        if (reAlarmWithTime.matches(t)) return action(IntentAction.SET_ALARM, text)
+        if (reAlarmBare.matches(t))     return action(IntentAction.SHOW_ALARMS, text)
+        if (reTimer.matches(t))         return action(IntentAction.SET_TIMER, text)
+
+        if (reLock.matches(t)) return action(IntentAction.LOCK_SCREEN, text)
+
+        if (reSilentOff.matches(t)) return action(IntentAction.SET_SILENT, text, extra = mapOf(IntentExtra.ON to "false", IntentExtra.MODE to "normal"))
+        if (reVibrate.matches(t))   return action(IntentAction.SET_SILENT, text, extra = mapOf(IntentExtra.ON to "true",  IntentExtra.MODE to "vibrate"))
+        if (reSilentOn.matches(t))  return action(IntentAction.SET_SILENT, text, extra = mapOf(IntentExtra.ON to "true",  IntentExtra.MODE to "silent"))
+
         if (reWifi.matches(t))       return toggleIntent(t, IntentAction.SET_WIFI, text)
         if (reBluetooth.matches(t))  return toggleIntent(t, IntentAction.SET_BLUETOOTH, text)
         if (reFlashlight.matches(t)) return toggleIntent(t, IntentAction.SET_FLASHLIGHT, text)
+
         if (reVolume.matches(t)) {
             val dir = if (t.contains("up") || t.contains("max") || t.contains("raise") || t.contains("increase")) "up" else "down"
             return action(IntentAction.SET_VOLUME, text, extra = mapOf(IntentExtra.DIRECTION to dir))
         }
-        // FIXED: groupValues[1]
+
+        // B2.2 FIX: groupValues[1] (was [2] — bug)
         reSearch.find(t)?.let { m ->
             val query = m.groupValues[1].trim()
             if (query.isNotBlank()) return action(IntentAction.SEARCH_QUERY, text, target = query)
         }
+
         if (reTime.matches(t))     return conv(IntentAction.TIME, text)
         if (reDate.matches(t))     return conv(IntentAction.DATE, text)
         if (reGreeting.matches(t)) return conv(IntentAction.GREETING, text)
         if (reStop.matches(t))     return conv(IntentAction.STOP, text)
+
         if (t.length > 12) return cloudIntent(text)
         return unknown(text)
     }
 
-    private fun isMessageIntent(t: String): Boolean {
-        return (t.startsWith("message ") || t.startsWith("text ") ||
-                t.startsWith("tell ") || t.startsWith("whatsapp ") ||
-                t.contains("send sms") || t.contains("send a text") ||
-                t.contains("send whatsapp") || t.contains("send message"))
-    }
+    private fun isMessageIntent(t: String): Boolean =
+        t.startsWith("message ") || t.startsWith("text ") || t.startsWith("tell ") ||
+        t.startsWith("whatsapp ") || t.contains("send sms") || t.contains("send a text") ||
+        t.contains("send whatsapp") || t.contains("send message")
 
     private fun messageIntent(t: String, raw: String): ZaraIntent {
         val channel = when {
@@ -122,22 +148,18 @@ class LocalIntentClassifier {
             reSmsChannel.matches(t)      -> ChannelType.SMS
             else                         -> ChannelType.SMS
         }
-        val actionStr = if (channel == ChannelType.WHATSAPP) IntentAction.SEND_WHATSAPP else IntentAction.SEND_SMS
+        val action = if (channel == ChannelType.WHATSAPP) IntentAction.SEND_WHATSAPP else IntentAction.SEND_SMS
         reMsgVerb.find(t)?.let { m ->
             val contact = m.groupValues[1].trim()
             val body    = m.groupValues[2].trim()
-            if (contact.isNotBlank()) {
-                return action(actionStr, raw, target = contact,
-                    extra = buildMap {
-                        if (body.isNotBlank()) put(IntentExtra.BODY, body)
-                        put(IntentExtra.CHANNEL, channel)
-                    })
-            }
+            if (contact.isNotBlank()) return action(action, raw, target = contact, extra = buildMap {
+                if (body.isNotBlank()) put(IntentExtra.BODY, body)
+                put(IntentExtra.CHANNEL, channel)
+            })
         }
         reMsgFallback.find(t)?.let { m ->
             val contact = m.groupValues[1].trim()
-            if (contact.isNotBlank())
-                return action(actionStr, raw, target = contact, extra = mapOf(IntentExtra.CHANNEL to channel))
+            if (contact.isNotBlank()) return action(action, raw, target = contact, extra = mapOf(IntentExtra.CHANNEL to channel))
         }
         return unknown(raw)
     }
@@ -150,7 +172,13 @@ class LocalIntentClassifier {
 
     private fun action(a: String, raw: String, target: String? = null, extra: Map<String, String> = emptyMap()) =
         ZaraIntent(IntentType.ACTION, a, target, extra, rawText = raw)
-    private fun conv(a: String, raw: String) = ZaraIntent(IntentType.CONVERSATION, a, rawText = raw)
-    private fun cloudIntent(raw: String)     = ZaraIntent(IntentType.CLOUD, IntentAction.QUERY, rawText = raw)
-    private fun unknown(raw: String)         = ZaraIntent(IntentType.UNKNOWN, IntentAction.UNKNOWN, rawText = raw)
+
+    private fun conv(a: String, raw: String) =
+        ZaraIntent(IntentType.CONVERSATION, a, rawText = raw)
+
+    private fun cloudIntent(raw: String) =
+        ZaraIntent(IntentType.CLOUD, IntentAction.QUERY, rawText = raw)
+
+    private fun unknown(raw: String) =
+        ZaraIntent(IntentType.UNKNOWN, IntentAction.UNKNOWN, rawText = raw)
 }

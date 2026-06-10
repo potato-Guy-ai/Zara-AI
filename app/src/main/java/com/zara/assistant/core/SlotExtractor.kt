@@ -1,14 +1,11 @@
 package com.zara.assistant.core
 
 /**
- * Layer 4A/4B/4C + B1 + B2.2
+ * Layer 4A/4B/4C + Batch B1 + B2.2
  *
- * B2.2: Added SET_ALARM slot extraction (ALARM_HOUR, ALARM_MINUTE).
- * Supports:
- *   "set alarm for 6 am"    -> ALARM_HOUR=6,  ALARM_MINUTE=0
- *   "set alarm for 7:30 am" -> ALARM_HOUR=7,  ALARM_MINUTE=30
- *   "set alarm at 5"        -> ALARM_HOUR=5,  ALARM_MINUTE=0
- *   "create alarm for 8 pm" -> ALARM_HOUR=20, ALARM_MINUTE=0
+ * B2.2: Added extractAlarmTime for SET_ALARM.
+ *   Parses: "6 am", "7:30 am", "8 pm", "5" (hour only)
+ *   Stores ALARM_HOUR and ALARM_MINUTE in extras.
  */
 object SlotExtractor {
 
@@ -17,7 +14,8 @@ object SlotExtractor {
         RegexOption.IGNORE_CASE
     )
 
-    // B2.2: matches "6 am", "7:30 am", "5", "8 pm", "17:00"
+    // B2.2: alarm time patterns
+    // Matches: "6 am", "6am", "7:30 am", "7:30am", "17:00", "5"
     private val reAlarmTime = Regex(
         "(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?",
         RegexOption.IGNORE_CASE
@@ -35,22 +33,6 @@ object SlotExtractor {
             IntentAction.SEND_WHATSAPP -> extractRecipientAndChannel(intent)
             else                       -> intent
         }
-    }
-
-    // B2.2: parse alarm time from rawText
-    private fun extractAlarmTime(intent: ZaraIntent): ZaraIntent {
-        val m = reAlarmTime.find(intent.rawText) ?: return intent
-        var hour   = m.groupValues[1].toIntOrNull() ?: return intent
-        val minute = m.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 0
-        val ampm   = m.groupValues[3].lowercase()
-        when {
-            ampm == "pm" && hour != 12 -> hour += 12
-            ampm == "am" && hour == 12 -> hour = 0
-        }
-        val newExtra = intent.extra.toMutableMap()
-        newExtra[IntentExtra.ALARM_HOUR]   = hour.toString()
-        newExtra[IntentExtra.ALARM_MINUTE] = minute.toString()
-        return intent.copy(extra = newExtra)
     }
 
     private fun extractMedia(intent: ZaraIntent): ZaraIntent {
@@ -98,6 +80,24 @@ object SlotExtractor {
         return intent.copy(extra = newExtra)
     }
 
+    // B2.2: extract alarm hour/minute from rawText
+    private fun extractAlarmTime(intent: ZaraIntent): ZaraIntent {
+        val raw = intent.rawText.lowercase()
+        val m = reAlarmTime.find(raw) ?: return intent
+        var hour   = m.groupValues[1].toIntOrNull() ?: return intent
+        val minute = m.groupValues[2].toIntOrNull() ?: 0
+        val ampm   = m.groupValues[3].lowercase()
+        when {
+            ampm == "pm" && hour < 12 -> hour += 12
+            ampm == "am" && hour == 12 -> hour = 0
+            // no am/pm and hour <= 12: assume as-spoken (e.g. "5" = 5 AM or 5 PM ambiguous — keep as-is)
+        }
+        val newExtra = intent.extra.toMutableMap()
+        newExtra[IntentExtra.ALARM_HOUR]   = hour.toString()
+        newExtra[IntentExtra.ALARM_MINUTE] = minute.toString()
+        return intent.copy(extra = newExtra)
+    }
+
     private fun extractSearch(intent: ZaraIntent): ZaraIntent {
         val raw = intent.target ?: return intent
         val lastOnIdx = raw.lastIndexOf(" on ", ignoreCase = true)
@@ -116,8 +116,9 @@ object SlotExtractor {
     private fun extractRecipientAndChannel(intent: ZaraIntent): ZaraIntent {
         val newExtra = intent.extra.toMutableMap()
         val recipient = intent.target
-        if (recipient != null && !newExtra.containsKey(IntentExtra.RECIPIENT))
+        if (recipient != null && !newExtra.containsKey(IntentExtra.RECIPIENT)) {
             newExtra[IntentExtra.RECIPIENT] = recipient
+        }
         if (!newExtra.containsKey(IntentExtra.CHANNEL)) {
             val t = intent.rawText.lowercase()
             val channel = when {
