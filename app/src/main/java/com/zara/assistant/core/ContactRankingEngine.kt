@@ -4,17 +4,21 @@ import com.zara.assistant.actions.ContactResolver
 
 /**
  * Batch A1 — Fix 4 (Candidate Ranking)
+ * Strong-candidate fix: scoreOf() exposed for EntityResolver use.
  *
  * Ranking order:
  *   1. Exact normalized match     → score 100
  *   2. Starts-with match          → score 80
  *   3. Contains match             → score 60
- *   4. Fuzzy match (via ContactFuzzyMatcher) → score 10–50
+ *   4. Fuzzy match                → score 10–50
  *
- * Only candidates with score > 0 are returned.
- * Fuzzy candidates included only when no exact/startsWith/contains candidates exist.
+ * STRONG_THRESHOLD = 80: candidates scoring >= 80 are "strong".
+ * EntityResolver uses scoreOf() to compute per-candidate scores
+ * before deciding auto-resolve vs clarification.
  */
 object ContactRankingEngine {
+
+    const val STRONG_THRESHOLD = 80
 
     data class RankedContact(
         val contact: ContactResolver.ContactResult,
@@ -25,20 +29,20 @@ object ContactRankingEngine {
         val normQuery = ContactNormalizer.normalize(query)
 
         val ranked = candidates.map { c ->
-            val normName = ContactNormalizer.normalize(c.displayName)
-            val score = when {
-                normName == normQuery             -> 100
-                normName.startsWith(normQuery)   -> 80
-                normName.contains(normQuery)     -> 60
-                else                             -> 0  // will try fuzzy below
-            }
-            RankedContact(c, score)
+            RankedContact(c, scoreOf(normQuery, ContactNormalizer.normalize(c.displayName)))
         }
 
         val highScored = ranked.filter { it.score > 0 }.sortedByDescending { it.score }
         if (highScored.isNotEmpty()) return highScored.map { it.contact }
 
-        // No exact/startsWith/contains — try fuzzy
         return ContactFuzzyMatcher.match(query, candidates)
+    }
+
+    /** Returns the deterministic score for a normalized name against a normalized query. */
+    fun scoreOf(normQuery: String, normName: String): Int = when {
+        normName == normQuery          -> 100
+        normName.startsWith(normQuery) -> 80
+        normName.contains(normQuery)   -> 60
+        else                           -> 0
     }
 }

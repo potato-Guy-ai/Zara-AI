@@ -10,10 +10,15 @@ import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * Layer 5.1 + 5 Hardening + Final Safety Fixes
+ * Layer 5.1 + 5 Hardening + Final Safety Fixes + Strong-Candidate Fix
  *
- * FIX 1: MEDIUM confidence single result now forces clarification, not auto-execute.
- * FIX 2: All clarification candidates store resolvedValue = phone number (never display name).
+ * FIX 1: MEDIUM confidence single result forces clarification.
+ * FIX 2: resolvedValue = phone number always.
+ * FIX 3 (strong-candidate): In the multiple-results branch, compute strongCandidates
+ *   (score >= STRONG_THRESHOLD=80). If strongCandidates.size > 1, do NOT auto-resolve
+ *   on exact match — trigger clarification using only strong candidates (excludes score-60).
+ *   If strongCandidates.size == 1, auto-resolve to that one candidate.
+ *   Falls back to existing logic when no strong candidates exist.
  */
 class EntityResolver(private val context: Context) {
 
@@ -39,7 +44,7 @@ class EntityResolver(private val context: Context) {
 
         val rawAll = contactResolver.resolveAll(query)
         if (rawAll.isEmpty()) {
-            ZaraLogger.d("EntityResolver: no contact for '$query'")
+            ZaraLogger.d("EntityResolver: no contact for \'$query\'")
             return intent
         }
 
@@ -49,27 +54,21 @@ class EntityResolver(private val context: Context) {
 
         if (ranked.size == 1) {
             val normName = ContactNormalizer.normalize(ranked[0].displayName)
-            val topScore = when {
-                normName == query              -> 100
-                normName.startsWith(query)    -> 80
-                else                          -> 60
-            }
+            val topScore = ContactRankingEngine.scoreOf(query, normName)
             val level = EntityConfidenceEvaluator.evaluate(1, topScore)
 
             when (level) {
                 EntityConfidenceLevel.HIGH -> {
-                    // Only HIGH auto-executes
                     newExtra[IntentExtra.CONTACT_NAME]      = ranked[0].displayName
                     newExtra[IntentExtra.PHONE_NUMBER]      = ranked[0].number
                     newExtra[IntentExtra.ENTITY_CONFIDENCE] = "1.0"
                     return intent.copy(extra = newExtra)
                 }
                 EntityConfidenceLevel.MEDIUM -> {
-                    // MEDIUM → force clarification (FIX 1)
                     val candidates = ranked.map {
                         ClarificationCandidate(
                             displayName   = it.displayName,
-                            resolvedValue = it.number,   // FIX 2: always phone
+                            resolvedValue = it.number,
                             confidence    = 0.65f
                         )
                     }
@@ -93,32 +92,71 @@ class EntityResolver(private val context: Context) {
             }
         }
 
-        // Multiple results
-        val exact = ranked.firstOrNull { ContactNormalizer.normalize(it.displayName) == query }
-        if (exact != null) {
-            newExtra[IntentExtra.CONTACT_NAME]      = exact.displayName
-            newExtra[IntentExtra.PHONE_NUMBER]      = exact.number
-            newExtra[IntentExtra.ENTITY_CONFIDENCE] = "1.0"
-        } else {
-            // FIX 2: resolvedValue = phone number, not display name
-            val candidates = ranked.take(5).map {
-                ClarificationCandidate(
-                    displayName   = it.displayName,
-                    resolvedValue = it.number,
-                    confidence    = 0.7f
+        // ── Multiple results ──────────────────────────────────────────────────
+        // FIX 3: compute strong candidates (score >= 80) from the ranked list.
+        val normQuery = query
+        val strongCandidates = ranked.filter { c ->
+            ContactRankingEngine.scoreOf(normQuery, ContactNormalizer.normalize(c.displayName)) >= ContactRankingEngine.STRONG_THRESHOLD
+        }
+
+        when {
+            // 2+ strong candidates → always clarify, show only strong candidates
+            strongCandidates.size > 1 -> {
+                val candidates = strongCandidates.map {
+                    ClarificationCandidate(
+                        displayName   = it.displayName,
+                        resolvedValue = it.number,
+                        confidence    = 0.8f
+                    )
+                }
+                ClarificationManager.store(
+                    PendingClarification(
+                        clarificationId = UUID.randomUUID().toString(),
+                        originalIntent  = intent,
+                        entityType      = ClarificationEntityType.CONTACT,
+                        candidates      = candidates
+                    )
                 )
+                newExtra[IntentExtra.NEEDS_CLARIFICATION] = "true"
+                newExtra[IntentExtra.ENTITY_CANDIDATES]   = candidates.joinToString("|") { it.displayName }
+                newExtra[IntentExtra.ENTITY_CONFIDENCE]   = "0.8"
             }
-            ClarificationManager.store(
-                PendingClarification(
-                    clarificationId = UUID.randomUUID().toString(),
-                    originalIntent  = intent,
-                    entityType      = ClarificationEntityType.CONTACT,
-                    candidates      = candidates
-                )
-            )
-            newExtra[IntentExtra.NEEDS_CLARIFICATION] = "true"
-            newExtra[IntentExtra.ENTITY_CANDIDATES]   = candidates.joinToString("|") { it.displayName }
-            newExtra[IntentExtra.ENTITY_CONFIDENCE]   = "0.5"
+
+            // Exactly 1 strong candidate → auto-resolve
+            strongCandidates.size == 1 -> {
+                newExtra[IntentExtra.CONTACT_NAME]      = strongCandidates[0].displayName
+                newExtra[IntentExtra.PHONE_NUMBER]      = strongCandidates[0].number
+                newExtra[IntentExtra.ENTITY_CONFIDENCE] = "1.0"
+            }
+
+            // No strong candidates → fall back to existing exact-match / clarification logic
+            else -> {
+                val exact = ranked.firstOrNull { ContactNormalizer.normalize(it.displayName) == normQuery }
+                if (exact != null) {
+                    newExtra[IntentExtra.CONTACT_NAME]      = exact.displayName
+                    newExtra[IntentExtra.PHONE_NUMBER]      = exact.number
+                    newExtra[IntentExtra.ENTITY_CONFIDENCE] = "1.0"
+                } else {
+                    val candidates = ranked.take(5).map {
+                        ClarificationCandidate(
+                            displayName   = it.displayName,
+                            resolvedValue = it.number,
+                            confidence    = 0.7f
+                        )
+                    }
+                    ClarificationManager.store(
+                        PendingClarification(
+                            clarificationId = UUID.randomUUID().toString(),
+                            originalIntent  = intent,
+                            entityType      = ClarificationEntityType.CONTACT,
+                            candidates      = candidates
+                        )
+                    )
+                    newExtra[IntentExtra.NEEDS_CLARIFICATION] = "true"
+                    newExtra[IntentExtra.ENTITY_CANDIDATES]   = candidates.joinToString("|") { it.displayName }
+                    newExtra[IntentExtra.ENTITY_CONFIDENCE]   = "0.5"
+                }
+            }
         }
         return intent.copy(extra = newExtra)
     }
@@ -136,7 +174,6 @@ class EntityResolver(private val context: Context) {
             newExtra[IntentExtra.APP_NAME]          = result.displayLabel ?: appQuery
             newExtra[IntentExtra.ENTITY_CONFIDENCE] = result.confidence.toString()
         } else {
-            // App candidates: resolvedValue = candidate name (no package available at this stage)
             newExtra[IntentExtra.NEEDS_CLARIFICATION] = "true"
             newExtra[IntentExtra.ENTITY_CANDIDATES]   = result.candidates.take(5).joinToString("|")
             newExtra[IntentExtra.ENTITY_CONFIDENCE]   = "0.0"
