@@ -8,9 +8,14 @@ import com.zara.assistant.utils.ZaraLogger
 
 /**
  * B2.2: Added setAlarm(hour, minute) and showTimers().
- * Critical patch: sendWhatsApp() now triggers clarification when resolveAll() returns >1 contact.
+ * Critical patch v2: sendWhatsApp() returns AMBIGUOUS sentinel on multiple contacts.
+ * ActionExecutor intercepts sentinel and stores PendingClarification.
  */
 class AppActions(private val context: Context) {
+
+    companion object {
+        const val AMBIGUOUS_PREFIX = "__AMBIGUOUS__|"
+    }
 
     private var appCache: Map<String, String>? = null
     private val resolver: AppResolver = RuleBasedAppResolver()
@@ -73,9 +78,10 @@ class AppActions(private val context: Context) {
         return when {
             results.isEmpty() -> "I couldn't find '$contact' in your contacts to WhatsApp."
             results.size > 1 -> {
-                // Multiple matches — return clarification list; do NOT auto-send
-                val list = results.mapIndexed { i, r -> "${i + 1}. ${r.displayName}" }.joinToString(", ")
-                "I found multiple contacts: $list. Which one would you like to WhatsApp?"
+                // Return structured sentinel: ActionExecutor stores PendingClarification
+                // Format: "__AMBIGUOUS__|name1|phone1|name2|phone2|..."
+                val parts = results.flatMap { listOf(it.displayName, it.number) }.joinToString("|")
+                "$AMBIGUOUS_PREFIX$parts"
             }
             else -> {
                 val cleaned = results[0].number.filter { it.isDigit() }
