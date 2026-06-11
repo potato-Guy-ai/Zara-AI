@@ -16,11 +16,16 @@ import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * B2.2: SET_ALARM, SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK added.
+ * B2.2: SET_ALARM, SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK.
  * B2.2 fix: YouTube ACTION_SEARCH → searchYouTube().
- * Critical patch: handleAmbiguous() intercepts __AMBIGUOUS__ sentinel from CallActions/AppActions,
- * stores PendingClarification with phone numbers as resolvedValues, returns clarification prompt.
- * User's follow-up ("1", "Atha") resolves via ClarificationManager → dials/sends correctly.
+ * Critical patch: AMBIGUOUS sentinel handling + PHONE_NUMBER fast-path for CALL/WHATSAPP.
+ *
+ * Full clarification flow:
+ * 1. "call atha" → callActions.call("atha") → resolveAll returns 3 → AMBIGUOUS sentinel
+ * 2. handleAmbiguous() stores PendingClarification(candidates=[{Atha,+91...},{Atha2,+91...}])
+ * 3. User says "1" → ClarificationManager.resolve("1") → candidates[0].resolvedValue = phone
+ *    → PHONE_NUMBER set in extra → originalIntent returned
+ * 4. executeRaw(CALL): PHONE_NUMBER present → callActions.dialNumber() directly, no new resolveAll
  */
 class ActionExecutor(private val context: Context) {
 
@@ -56,15 +61,13 @@ class ActionExecutor(private val context: Context) {
 
         return try {
             val raw = executeRaw(intent)
-            // Intercept structured ambiguity sentinel from CallActions / AppActions
             if (raw.startsWith(CallActions.AMBIGUOUS_PREFIX)) handleAmbiguous(raw, intent) else raw
         } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
     }
 
     /**
      * Parse __AMBIGUOUS__|name1|phone1|name2|phone2|... sentinel.
-     * Build PendingClarification with resolvedValue = phone number.
-     * Store in ClarificationManager. Return user-facing prompt.
+     * Build PendingClarification with resolvedValue = phone number (for CALL/WHATSAPP).
      */
     private fun handleAmbiguous(sentinel: String, intent: ZaraIntent): String {
         val parts = sentinel.removePrefix(CallActions.AMBIGUOUS_PREFIX).split("|")
@@ -146,11 +149,32 @@ class ActionExecutor(private val context: Context) {
 
     private suspend fun executeRaw(intent: ZaraIntent): String {
         return when (intent.action) {
-            IntentAction.CALL          -> callActions.call(intent.target ?: return "Who should I call?")
+            IntentAction.CALL -> {
+                // Fast-path: if PHONE_NUMBER already resolved (post-clarification), dial directly
+                val phone = intent.extra[IntentExtra.PHONE_NUMBER]
+                val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
+                if (phone != null) callActions.dialNumber(phone, name)
+                else callActions.call(intent.target ?: return "Who should I call?")
+            }
             IntentAction.ANSWER_CALL   -> callActions.answerCall()
             IntentAction.END_CALL      -> callActions.endCall()
             IntentAction.SEND_SMS      -> appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
-            IntentAction.SEND_WHATSAPP -> appActions.sendWhatsApp(intent.target ?: return "Who should I WhatsApp?", intent.extra[IntentExtra.BODY] ?: "")
+            IntentAction.SEND_WHATSAPP -> {
+                // Fast-path: if PHONE_NUMBER already resolved, dial WhatsApp directly
+                val phone = intent.extra[IntentExtra.PHONE_NUMBER]
+                val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
+                val body  = intent.extra[IntentExtra.BODY] ?: ""
+                if (phone != null) {
+                    val cleaned = phone.filter { it.isDigit() }
+                    try {
+                        val uri = android.net.Uri.parse("https://wa.me/$cleaned?text=${android.net.Uri.encode(body)}")
+                        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                        "Opening WhatsApp to message $name."
+                    } catch (e: Exception) { "Couldn't open WhatsApp." }
+                } else {
+                    appActions.sendWhatsApp(intent.target ?: return "Who should I WhatsApp?", body)
+                }
+            }
             IntentAction.OPEN_APP -> {
                 val pkg  = intent.extra[IntentExtra.APP_PACKAGE]
                 val name = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP] ?: intent.target ?: return "Which app?"
