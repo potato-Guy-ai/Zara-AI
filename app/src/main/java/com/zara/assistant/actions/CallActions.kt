@@ -7,10 +7,16 @@ import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.utils.ZaraLogger
 
 /**
- * Critical patch: call() now triggers clarification when resolveAll() returns >1 contact.
- * Silent auto-dial of first result is removed.
+ * Critical patch (v2):
+ * call() returns AMBIGUOUS_PREFIX sentinel when resolveAll() returns >1 result.
+ * ActionExecutor intercepts this sentinel and stores PendingClarification.
  */
 class CallActions(private val context: Context) {
+
+    companion object {
+        /** Sentinel prefix detected by ActionExecutor to trigger structured clarification. */
+        const val AMBIGUOUS_PREFIX = "__AMBIGUOUS__|"
+    }
 
     private val contactResolver = ContactResolver(context)
 
@@ -20,14 +26,15 @@ class CallActions(private val context: Context) {
             results.isEmpty() -> openDiallerSearch(contact)
             results.size == 1 -> dialNumber(results[0].number, results[0].displayName)
             else -> {
-                // Multiple matches — return clarification list; do NOT auto-dial
-                val list = results.mapIndexed { i, r -> "${i + 1}. ${r.displayName}" }.joinToString(", ")
-                "I found multiple contacts: $list. Which one would you like to call?"
+                // Return structured sentinel: ActionExecutor stores PendingClarification
+                // Format: "__AMBIGUOUS__|name1|phone1|name2|phone2|..."
+                val parts = results.flatMap { listOf(it.displayName, it.number) }.joinToString("|")
+                "$AMBIGUOUS_PREFIX$parts"
             }
         }
     }
 
-    private fun dialNumber(number: String, displayName: String): String {
+    fun dialNumber(number: String, displayName: String): String {
         if (!PermissionManager.has(context, android.Manifest.permission.CALL_PHONE)) {
             return "I need the Call permission to place calls."
         }
