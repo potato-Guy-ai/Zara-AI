@@ -16,8 +16,11 @@ import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * B2.2: Added SET_ALARM with hour/minute, SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK in executeRaw.
- * B2.2 fix: executePlan "youtube" branch routes ACTION_SEARCH to searchYouTube(), not playMusic().
+ * B2.2: SET_ALARM, SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK added.
+ * B2.2 fix: YouTube ACTION_SEARCH → searchYouTube().
+ * Critical patch: handleAmbiguous() intercepts __AMBIGUOUS__ sentinel from CallActions/AppActions,
+ * stores PendingClarification with phone numbers as resolvedValues, returns clarification prompt.
+ * User's follow-up ("1", "Atha") resolves via ClarificationManager → dials/sends correctly.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -51,7 +54,39 @@ class ActionExecutor(private val context: Context) {
         val planApp = intent.extra[AppActionPlanner.KEY_APP]
         if (planApp != null) return executePlan(intent, planApp)
 
-        return try { executeRaw(intent) } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
+        return try {
+            val raw = executeRaw(intent)
+            // Intercept structured ambiguity sentinel from CallActions / AppActions
+            if (raw.startsWith(CallActions.AMBIGUOUS_PREFIX)) handleAmbiguous(raw, intent) else raw
+        } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
+    }
+
+    /**
+     * Parse __AMBIGUOUS__|name1|phone1|name2|phone2|... sentinel.
+     * Build PendingClarification with resolvedValue = phone number.
+     * Store in ClarificationManager. Return user-facing prompt.
+     */
+    private fun handleAmbiguous(sentinel: String, intent: ZaraIntent): String {
+        val parts = sentinel.removePrefix(CallActions.AMBIGUOUS_PREFIX).split("|")
+        val candidates = mutableListOf<ClarificationCandidate>()
+        var i = 0
+        while (i + 1 < parts.size) {
+            candidates.add(ClarificationCandidate(displayName = parts[i], resolvedValue = parts[i + 1]))
+            i += 2
+        }
+        if (candidates.isEmpty()) return "I found multiple contacts but couldn't list them."
+        if (!ClarificationManager.hasPending()) {
+            ClarificationManager.store(
+                PendingClarification(
+                    clarificationId = UUID.randomUUID().toString(),
+                    originalIntent  = intent,
+                    entityType      = ClarificationEntityType.CONTACT,
+                    candidates      = candidates
+                )
+            )
+        }
+        val list = candidates.mapIndexed { idx, c -> "${idx + 1}. ${c.displayName}" }.joinToString(", ")
+        return "I found multiple contacts: $list. Which one did you mean?"
     }
 
     private suspend fun executeContract(contract: ExecutionContract, intent: ZaraIntent): String {
@@ -85,7 +120,7 @@ class ActionExecutor(private val context: Context) {
         val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
         val appName = intent.extra[IntentExtra.APP_NAME] ?: app
         return try {
-            when (app) {
+            val raw = when (app) {
                 "whatsapp" -> when (action) {
                     AppActionPlanner.ACTION_VOICE_MESSAGE, AppActionPlanner.ACTION_VIDEO_CALL, AppActionPlanner.ACTION_AUDIO_CALL ->
                         appActions.sendWhatsApp(target ?: return "Who?", "")
@@ -93,7 +128,6 @@ class ActionExecutor(private val context: Context) {
                         appActions.sendWhatsApp(target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
                     else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp("whatsapp")
                 }
-                // B2.2 fix: ACTION_SEARCH routes to searchYouTube(); other actions use play path
                 "youtube" -> when (action) {
                     AppActionPlanner.ACTION_SEARCH ->
                         appActions.searchYouTube(query ?: target ?: return "What should I search on YouTube?")
@@ -104,8 +138,9 @@ class ActionExecutor(private val context: Context) {
                 "phone"   -> callActions.call(target ?: return "Who should I call?")
                 "music"   -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target)
                              else appActions.playMusic(query ?: target, appName)
-                else -> executeFallback(intent)
+                else -> return executeFallback(intent)
             }
+            if (raw.startsWith(CallActions.AMBIGUOUS_PREFIX)) handleAmbiguous(raw, intent) else raw
         } catch (e: Exception) { ZaraLogger.e("executePlan: ${e.message}"); "Something went wrong." }
     }
 
