@@ -6,17 +6,24 @@ import android.net.Uri
 import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.utils.ZaraLogger
 
+/**
+ * Critical patch: call() now triggers clarification when resolveAll() returns >1 contact.
+ * Silent auto-dial of first result is removed.
+ */
 class CallActions(private val context: Context) {
 
     private val contactResolver = ContactResolver(context)
 
-    // suspend: ContactResolver.resolveAll is suspend (Layer 5.1.1)
     suspend fun call(contact: String): String {
         val results = contactResolver.resolveAll(contact)
         return when {
             results.isEmpty() -> openDiallerSearch(contact)
             results.size == 1 -> dialNumber(results[0].number, results[0].displayName)
-            else -> dialNumber(results[0].number, results[0].displayName)
+            else -> {
+                // Multiple matches — return clarification list; do NOT auto-dial
+                val list = results.mapIndexed { i, r -> "${i + 1}. ${r.displayName}" }.joinToString(", ")
+                "I found multiple contacts: $list. Which one would you like to call?"
+            }
         }
     }
 
