@@ -17,12 +17,6 @@ import com.zara.assistant.models.PendingClarification
 import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
-/**
- * Contact Execution Consistency Fix:
- * Invariant: IF PHONE_NUMBER exists in extras, NEVER re-resolve contacts.
- * All contact-based actions (CALL, SEND_WHATSAPP, SEND_SMS) check PHONE_NUMBER first.
- * executeContract() and executePlan() phone branches also respect PHONE_NUMBER.
- */
 class ActionExecutor(private val context: Context) {
 
     private val appActions   = AppActions(context)
@@ -61,9 +55,6 @@ class ActionExecutor(private val context: Context) {
         } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
     }
 
-    // ── Invariant helper ────────────────────────────────────────────────────
-    // If PHONE_NUMBER exists: execute directly. Never re-resolve.
-
     private fun executeResolvedCall(intent: ZaraIntent): String? {
         val phone = intent.extra[IntentExtra.PHONE_NUMBER] ?: return null
         val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
@@ -95,8 +86,6 @@ class ActionExecutor(private val context: Context) {
             "Opening SMS to $name."
         } catch (e: Exception) { "Couldn\'t open SMS app." }
     }
-
-    // ────────────────────────────────────────────────────────────────────────
 
     private fun handleAmbiguous(sentinel: String, intent: ZaraIntent): String {
         val parts = sentinel.removePrefix(CallActions.AMBIGUOUS_PREFIX).split("|")
@@ -137,8 +126,7 @@ class ActionExecutor(private val context: Context) {
                     AppActionPlanner.ACTION_SEARCH -> appActions.searchYouTube(contract.query ?: contract.target ?: return "What to search?")
                     else -> appActions.playMusic(contract.query ?: contract.target, "youtube")
                 }
-                // FIX 3: phone branch respects PHONE_NUMBER
-                "phone" -> executeResolvedCall(intent) ?: {
+                "phone" -> executeResolvedCall(intent) ?: run {
                     val raw = callActions.call(contract.target ?: return "Who should I call?")
                     if (raw.startsWith(CallActions.AMBIGUOUS_PREFIX)) handleAmbiguous(raw, intent) else raw
                 }
@@ -168,7 +156,6 @@ class ActionExecutor(private val context: Context) {
                     AppActionPlanner.ACTION_SEARCH -> appActions.searchYouTube(query ?: target ?: return "What should I search on YouTube?")
                     else -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target) else appActions.playMusic(query ?: target, "youtube")
                 }
-                // FIX 4: phone branch respects PHONE_NUMBER
                 "phone" -> executeResolvedCall(intent) ?: callActions.call(target ?: return "Who should I call?")
                 "music" -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target)
                            else appActions.playMusic(query ?: target, appName)
@@ -180,7 +167,6 @@ class ActionExecutor(private val context: Context) {
 
     private suspend fun executeRaw(intent: ZaraIntent): String {
         return when (intent.action) {
-            // CALL: unchanged — already correct
             IntentAction.CALL -> {
                 val phone = intent.extra[IntentExtra.PHONE_NUMBER]
                 val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
@@ -189,12 +175,10 @@ class ActionExecutor(private val context: Context) {
             }
             IntentAction.ANSWER_CALL -> callActions.answerCall()
             IntentAction.END_CALL    -> callActions.endCall()
-            // FIX 1: SEND_WHATSAPP — PHONE_NUMBER fast-path via helper
             IntentAction.SEND_WHATSAPP -> {
                 executeResolvedWhatsApp(intent)
                     ?: appActions.sendWhatsApp(intent.target ?: return "Who should I WhatsApp?", intent.extra[IntentExtra.BODY] ?: "")
             }
-            // FIX 2: SEND_SMS — PHONE_NUMBER fast-path via helper
             IntentAction.SEND_SMS -> {
                 executeResolvedSms(intent)
                     ?: appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
