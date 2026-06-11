@@ -8,7 +8,7 @@ import com.zara.assistant.utils.ZaraLogger
 
 /**
  * B2.2: Added setAlarm(hour, minute) and showTimers().
- * Unchanged: setTimer, openAlarm, playMusicByPackage, playMusic, search, searchYouTube.
+ * Critical patch: sendWhatsApp() now triggers clarification when resolveAll() returns >1 contact.
  */
 class AppActions(private val context: Context) {
 
@@ -39,20 +39,20 @@ class AppActions(private val context: Context) {
                 val list = result.candidates.take(5).mapIndexed { i, s -> "${i+1}. $s" }.joinToString(", ")
                 "Did you mean: $list?"
             }
-            else -> "I couldn\'t find an installed app called \'$name\'."
+            else -> "I couldn't find an installed app called '$name'."
         }
     }
 
     private fun launchPackage(pkg: String, displayName: String): String {
         return try {
             val intent = context.packageManager.getLaunchIntentForPackage(pkg)
-                ?: return "\'$displayName\' is installed but can\'t be launched."
+                ?: return "'$displayName' is installed but can't be launched."
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             context.startActivity(intent)
             "Opening $displayName."
         } catch (e: Exception) {
             ZaraLogger.e("launchPackage: ${e.message}")
-            "Couldn\'t open $displayName."
+            "Couldn't open $displayName."
         }
     }
 
@@ -64,36 +64,47 @@ class AppActions(private val context: Context) {
                 data = uri; putExtra("sms_body", body); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
-            if (number != null) "Opening SMS to $contact." else "Opening SMS. Couldn\'t resolve \'$contact\'."
-        } catch (e: Exception) { ZaraLogger.e("sendSms: ${e.message}"); "Couldn\'t open SMS app." }
+            if (number != null) "Opening SMS to $contact." else "Opening SMS. Couldn't resolve '$contact'."
+        } catch (e: Exception) { ZaraLogger.e("sendSms: ${e.message}"); "Couldn't open SMS app." }
     }
 
     suspend fun sendWhatsApp(contact: String, body: String): String {
-        val number = ContactResolver(context).resolveNumber(contact)
-            ?: return "I couldn\'t find \'$contact\' in your contacts to WhatsApp."
-        val cleaned = number.filter { it.isDigit() }
-        return try {
-            val uri = Uri.parse("https://wa.me/$cleaned?text=${Uri.encode(body)}")
-            context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            "Opening WhatsApp to message $contact."
-        } catch (e: Exception) { ZaraLogger.e("sendWhatsApp: ${e.message}"); "Couldn\'t open WhatsApp. Make sure it\'s installed." }
+        val results = ContactResolver(context).resolveAll(contact)
+        return when {
+            results.isEmpty() -> "I couldn't find '$contact' in your contacts to WhatsApp."
+            results.size > 1 -> {
+                // Multiple matches — return clarification list; do NOT auto-send
+                val list = results.mapIndexed { i, r -> "${i + 1}. ${r.displayName}" }.joinToString(", ")
+                "I found multiple contacts: $list. Which one would you like to WhatsApp?"
+            }
+            else -> {
+                val cleaned = results[0].number.filter { it.isDigit() }
+                try {
+                    val uri = Uri.parse("https://wa.me/$cleaned?text=${Uri.encode(body)}")
+                    context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    "Opening WhatsApp to message ${results[0].displayName}."
+                } catch (e: Exception) {
+                    ZaraLogger.e("sendWhatsApp: ${e.message}")
+                    "Couldn't open WhatsApp. Make sure it's installed."
+                }
+            }
+        }
     }
 
     fun openCamera(): String {
         return try {
             context.startActivity(Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Opening camera."
-        } catch (e: Exception) { "Couldn\'t open camera." }
+        } catch (e: Exception) { "Couldn't open camera." }
     }
 
     fun openAlarm(): String {
         return try {
             context.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Opening clock."
-        } catch (e: Exception) { "Couldn\'t open clock." }
+        } catch (e: Exception) { "Couldn't open clock." }
     }
 
-    // B2.2: set a real alarm at hour:minute
     fun setAlarm(hour: Int, minute: Int): String {
         return try {
             val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
@@ -125,7 +136,6 @@ class AppActions(private val context: Context) {
         } catch (e: Exception) { ZaraLogger.e("setTimer: ${e.message}"); openAlarm() }
     }
 
-    // B2.2: show timers screen
     fun showTimers(): String {
         return try {
             context.startActivity(Intent(AlarmClock.ACTION_SHOW_TIMERS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -157,7 +167,7 @@ class AppActions(private val context: Context) {
             }
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(destination)}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Navigating to $destination."
-        } catch (e: Exception) { ZaraLogger.e("navigateTo: ${e.message}"); "Couldn\'t open navigation." }
+        } catch (e: Exception) { ZaraLogger.e("navigateTo: ${e.message}"); "Couldn't open navigation." }
     }
 
     fun playMusicByPackage(pkg: String, appName: String?, query: String?): String {
@@ -199,7 +209,7 @@ class AppActions(private val context: Context) {
             }
             context.startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MUSIC).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             if (query != null) "Playing $query." else "Opening music."
-        } catch (e: Exception) { ZaraLogger.e("playMusic: ${e.message}"); "Couldn\'t open music app." }
+        } catch (e: Exception) { ZaraLogger.e("playMusic: ${e.message}"); "Couldn't open music app." }
     }
 
     fun searchYouTube(query: String): String {
@@ -213,7 +223,7 @@ class AppActions(private val context: Context) {
             }
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=${Uri.encode(query)}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Searching YouTube for $query."
-        } catch (e: Exception) { ZaraLogger.e("searchYouTube: ${e.message}"); "Couldn\'t search YouTube." }
+        } catch (e: Exception) { ZaraLogger.e("searchYouTube: ${e.message}"); "Couldn't search YouTube." }
     }
 
     fun search(query: String, app: String? = null): String {
@@ -223,7 +233,7 @@ class AppActions(private val context: Context) {
             else -> try {
                 context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(query)}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 "Searching for $query."
-            } catch (e: Exception) { ZaraLogger.e("search: ${e.message}"); "Couldn\'t perform search." }
+            } catch (e: Exception) { ZaraLogger.e("search: ${e.message}"); "Couldn't perform search." }
         }
     }
 }
