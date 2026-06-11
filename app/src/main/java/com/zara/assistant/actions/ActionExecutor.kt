@@ -1,6 +1,8 @@
 package com.zara.assistant.actions
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import com.zara.assistant.core.AppActionPlanner
 import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.ExecutionContract
@@ -16,16 +18,10 @@ import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
- * B2.2: SET_ALARM, SHOW_ALARMS, SHOW_TIMERS, OPEN_CLOCK.
- * B2.2 fix: YouTube ACTION_SEARCH → searchYouTube().
- * Critical patch: AMBIGUOUS sentinel handling + PHONE_NUMBER fast-path for CALL/WHATSAPP.
- *
- * Full clarification flow:
- * 1. "call atha" → callActions.call("atha") → resolveAll returns 3 → AMBIGUOUS sentinel
- * 2. handleAmbiguous() stores PendingClarification(candidates=[{Atha,+91...},{Atha2,+91...}])
- * 3. User says "1" → ClarificationManager.resolve("1") → candidates[0].resolvedValue = phone
- *    → PHONE_NUMBER set in extra → originalIntent returned
- * 4. executeRaw(CALL): PHONE_NUMBER present → callActions.dialNumber() directly, no new resolveAll
+ * Contact Execution Consistency Fix:
+ * Invariant: IF PHONE_NUMBER exists in extras, NEVER re-resolve contacts.
+ * All contact-based actions (CALL, SEND_WHATSAPP, SEND_SMS) check PHONE_NUMBER first.
+ * executeContract() and executePlan() phone branches also respect PHONE_NUMBER.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -35,7 +31,7 @@ class ActionExecutor(private val context: Context) {
 
     suspend fun execute(intent: ZaraIntent): String {
         ZaraLogger.d("Executing: ${intent.action} target=${intent.target}")
-        if (intent.extra["unsupported_command"] == "true") return "Sorry, that command isn't supported."
+        if (intent.extra["unsupported_command"] == "true") return "Sorry, that command isn\'t supported."
         if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") return handleClarificationNeeded(intent)
 
         val contract: ExecutionContract? = ExecutionGuard.readContract(intent)
@@ -65,10 +61,43 @@ class ActionExecutor(private val context: Context) {
         } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
     }
 
-    /**
-     * Parse __AMBIGUOUS__|name1|phone1|name2|phone2|... sentinel.
-     * Build PendingClarification with resolvedValue = phone number (for CALL/WHATSAPP).
-     */
+    // ── Invariant helper ────────────────────────────────────────────────────
+    // If PHONE_NUMBER exists: execute directly. Never re-resolve.
+
+    private fun executeResolvedCall(intent: ZaraIntent): String? {
+        val phone = intent.extra[IntentExtra.PHONE_NUMBER] ?: return null
+        val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
+        return callActions.dialNumber(phone, name)
+    }
+
+    private fun executeResolvedWhatsApp(intent: ZaraIntent): String? {
+        val phone = intent.extra[IntentExtra.PHONE_NUMBER] ?: return null
+        val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
+        val body  = intent.extra[IntentExtra.BODY] ?: ""
+        val cleaned = phone.filter { it.isDigit() }
+        return try {
+            val uri = Uri.parse("https://wa.me/$cleaned?text=${Uri.encode(body)}")
+            context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            "Opening WhatsApp to message $name."
+        } catch (e: Exception) { "Couldn\'t open WhatsApp." }
+    }
+
+    private suspend fun executeResolvedSms(intent: ZaraIntent): String? {
+        val phone = intent.extra[IntentExtra.PHONE_NUMBER] ?: return null
+        val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
+        val body  = intent.extra[IntentExtra.BODY] ?: ""
+        return try {
+            val uri = Uri.parse("smsto:${phone.filter { it.isDigit() }}")
+            val smsIntent = Intent(Intent.ACTION_SENDTO).apply {
+                data = uri; putExtra("sms_body", body); addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(smsIntent)
+            "Opening SMS to $name."
+        } catch (e: Exception) { "Couldn\'t open SMS app." }
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+
     private fun handleAmbiguous(sentinel: String, intent: ZaraIntent): String {
         val parts = sentinel.removePrefix(CallActions.AMBIGUOUS_PREFIX).split("|")
         val candidates = mutableListOf<ClarificationCandidate>()
@@ -77,7 +106,7 @@ class ActionExecutor(private val context: Context) {
             candidates.add(ClarificationCandidate(displayName = parts[i], resolvedValue = parts[i + 1]))
             i += 2
         }
-        if (candidates.isEmpty()) return "I found multiple contacts but couldn't list them."
+        if (candidates.isEmpty()) return "I found multiple contacts but couldn\'t list them."
         if (!ClarificationManager.hasPending()) {
             ClarificationManager.store(
                 PendingClarification(
@@ -99,21 +128,25 @@ class ActionExecutor(private val context: Context) {
             when (contract.app) {
                 "whatsapp" -> when (contract.action) {
                     AppActionPlanner.ACTION_VOICE_MESSAGE, AppActionPlanner.ACTION_VIDEO_CALL, AppActionPlanner.ACTION_AUDIO_CALL ->
-                        appActions.sendWhatsApp(contract.target ?: return "Who?", "")
+                        executeResolvedWhatsApp(intent) ?: appActions.sendWhatsApp(contract.target ?: return "Who?", "")
                     AppActionPlanner.ACTION_MESSAGE ->
-                        appActions.sendWhatsApp(contract.target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
+                        executeResolvedWhatsApp(intent) ?: appActions.sendWhatsApp(contract.target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
                     else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp("whatsapp")
                 }
                 "youtube" -> when (contract.action) {
                     AppActionPlanner.ACTION_SEARCH -> appActions.searchYouTube(contract.query ?: contract.target ?: return "What to search?")
                     else -> appActions.playMusic(contract.query ?: contract.target, "youtube")
                 }
-                "phone"   -> callActions.call(contract.target ?: return "Who should I call?")
-                "music"   -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, contract.query ?: contract.target)
-                             else appActions.playMusic(contract.query ?: contract.target, appName)
+                // FIX 3: phone branch respects PHONE_NUMBER
+                "phone" -> executeResolvedCall(intent) ?: {
+                    val raw = callActions.call(contract.target ?: return "Who should I call?")
+                    if (raw.startsWith(CallActions.AMBIGUOUS_PREFIX)) handleAmbiguous(raw, intent) else raw
+                }
+                "music" -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, contract.query ?: contract.target)
+                           else appActions.playMusic(contract.query ?: contract.target, appName)
                 else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp(contract.app)
             }
-        } catch (e: Exception) { ZaraLogger.e("executeContract: ${e.message}"); "Couldn't complete '${contract.action}' on ${contract.app}." }
+        } catch (e: Exception) { ZaraLogger.e("executeContract: ${e.message}"); "Couldn\'t complete \'${contract.action}\' on ${contract.app}." }
     }
 
     private suspend fun executePlan(intent: ZaraIntent, app: String): String {
@@ -126,21 +159,19 @@ class ActionExecutor(private val context: Context) {
             val raw = when (app) {
                 "whatsapp" -> when (action) {
                     AppActionPlanner.ACTION_VOICE_MESSAGE, AppActionPlanner.ACTION_VIDEO_CALL, AppActionPlanner.ACTION_AUDIO_CALL ->
-                        appActions.sendWhatsApp(target ?: return "Who?", "")
+                        executeResolvedWhatsApp(intent) ?: appActions.sendWhatsApp(target ?: return "Who?", "")
                     AppActionPlanner.ACTION_MESSAGE ->
-                        appActions.sendWhatsApp(target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
+                        executeResolvedWhatsApp(intent) ?: appActions.sendWhatsApp(target ?: return "Who?", intent.extra[IntentExtra.BODY] ?: "")
                     else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp("whatsapp")
                 }
                 "youtube" -> when (action) {
-                    AppActionPlanner.ACTION_SEARCH ->
-                        appActions.searchYouTube(query ?: target ?: return "What should I search on YouTube?")
-                    else ->
-                        if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target)
-                        else appActions.playMusic(query ?: target, "youtube")
+                    AppActionPlanner.ACTION_SEARCH -> appActions.searchYouTube(query ?: target ?: return "What should I search on YouTube?")
+                    else -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target) else appActions.playMusic(query ?: target, "youtube")
                 }
-                "phone"   -> callActions.call(target ?: return "Who should I call?")
-                "music"   -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target)
-                             else appActions.playMusic(query ?: target, appName)
+                // FIX 4: phone branch respects PHONE_NUMBER
+                "phone" -> executeResolvedCall(intent) ?: callActions.call(target ?: return "Who should I call?")
+                "music" -> if (pkg != null) appActions.playMusicByPackage(pkg, appName, query ?: target)
+                           else appActions.playMusic(query ?: target, appName)
                 else -> return executeFallback(intent)
             }
             if (raw.startsWith(CallActions.AMBIGUOUS_PREFIX)) handleAmbiguous(raw, intent) else raw
@@ -149,31 +180,24 @@ class ActionExecutor(private val context: Context) {
 
     private suspend fun executeRaw(intent: ZaraIntent): String {
         return when (intent.action) {
+            // CALL: unchanged — already correct
             IntentAction.CALL -> {
-                // Fast-path: if PHONE_NUMBER already resolved (post-clarification), dial directly
                 val phone = intent.extra[IntentExtra.PHONE_NUMBER]
                 val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
                 if (phone != null) callActions.dialNumber(phone, name)
                 else callActions.call(intent.target ?: return "Who should I call?")
             }
-            IntentAction.ANSWER_CALL   -> callActions.answerCall()
-            IntentAction.END_CALL      -> callActions.endCall()
-            IntentAction.SEND_SMS      -> appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
+            IntentAction.ANSWER_CALL -> callActions.answerCall()
+            IntentAction.END_CALL    -> callActions.endCall()
+            // FIX 1: SEND_WHATSAPP — PHONE_NUMBER fast-path via helper
             IntentAction.SEND_WHATSAPP -> {
-                // Fast-path: if PHONE_NUMBER already resolved, dial WhatsApp directly
-                val phone = intent.extra[IntentExtra.PHONE_NUMBER]
-                val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
-                val body  = intent.extra[IntentExtra.BODY] ?: ""
-                if (phone != null) {
-                    val cleaned = phone.filter { it.isDigit() }
-                    try {
-                        val uri = android.net.Uri.parse("https://wa.me/$cleaned?text=${android.net.Uri.encode(body)}")
-                        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
-                        "Opening WhatsApp to message $name."
-                    } catch (e: Exception) { "Couldn't open WhatsApp." }
-                } else {
-                    appActions.sendWhatsApp(intent.target ?: return "Who should I WhatsApp?", body)
-                }
+                executeResolvedWhatsApp(intent)
+                    ?: appActions.sendWhatsApp(intent.target ?: return "Who should I WhatsApp?", intent.extra[IntentExtra.BODY] ?: "")
+            }
+            // FIX 2: SEND_SMS — PHONE_NUMBER fast-path via helper
+            IntentAction.SEND_SMS -> {
+                executeResolvedSms(intent)
+                    ?: appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
             }
             IntentAction.OPEN_APP -> {
                 val pkg  = intent.extra[IntentExtra.APP_PACKAGE]
@@ -215,7 +239,7 @@ class ActionExecutor(private val context: Context) {
             IntentAction.SET_VOLUME     -> mediaActions.adjustVolume(intent.extra[IntentExtra.DIRECTION] ?: "up")
             IntentAction.SET_SILENT     -> mediaActions.setSilentMode(intent.extra[IntentExtra.ON] == "true", intent.extra[IntentExtra.MODE] ?: "silent")
             IntentAction.LOCK_SCREEN    -> mediaActions.lockScreen()
-            else -> "I don't know how to do '${intent.action}' yet."
+            else -> "I don\'t know how to do \'${intent.action}\' yet."
         }
     }
 
@@ -227,7 +251,7 @@ class ActionExecutor(private val context: Context) {
 
     private fun handleClarificationNeeded(intent: ZaraIntent): String {
         val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]?.split("|")?.filter { it.isNotBlank() } ?: emptyList()
-        if (rawCandidates.isEmpty()) return "I'm not sure who or what you mean."
+        if (rawCandidates.isEmpty()) return "I\'m not sure who or what you mean."
         if (!ClarificationManager.hasPending()) {
             val entityType = when (intent.action) {
                 IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
