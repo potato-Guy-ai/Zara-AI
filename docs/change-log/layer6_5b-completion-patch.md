@@ -43,7 +43,7 @@ Queue is clean after every workflow failure.
 ## Test Cases
 | Scenario | Expected |
 |---|---|
-| `call boss then message him` | Step 2 uses snapshot person if no CONTACT_NAME resolved | 
+| `call boss then message him` | Step 2 uses snapshot person if no CONTACT_NAME resolved |
 | `open youtube and search cats` — step 1 fails | Step 2 PENDING → CANCELLED immediately |
 | `open youtube and search cats` — step 1 succeeds | Step 2 executes normally, no change |
 | Unrelated queue items present | Not cancelled by `cancelByIds` |
@@ -54,3 +54,26 @@ All existing single-step paths unchanged.
 
 ## Confidence
 99%
+
+---
+
+## Audit Notes
+
+**Audit result:**
+- Workflow queue cleanup verified
+- Snapshot consumption verified
+- No Layer 4 regressions
+- No Layer 5 regressions
+- No Layer 6 regressions
+- No execution deadlocks
+- No queue starvation
+- No workflow execution regressions
+
+**Known future consideration:**
+WorkflowContextSnapshot currently acts as a fallback safety mechanism.
+Current behavior is correct because workflow intents are fully built before execution begins.
+No user-facing bug exists. No fix required in Layer 6.5B.
+
+When future layers introduce delayed workflow execution, deferred execution, agent runtime,
+or persistent memory, reevaluate whether WorkflowContextSnapshot should become the primary
+context source rather than a fallback.
