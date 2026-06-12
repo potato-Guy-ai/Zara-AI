@@ -17,10 +17,7 @@ import com.zara.assistant.core.ZaraIntent
 import com.zara.assistant.execution.ActiveTask
 import com.zara.assistant.execution.ConfirmationManager
 import com.zara.assistant.execution.ConfirmationRequest
-import com.zara.assistant.execution.ConflictResolver
-import com.zara.assistant.execution.DependencyAnalyzer
 import com.zara.assistant.execution.ExecutionIntelligenceTelemetry
-import com.zara.assistant.execution.ExecutionPlanner
 import com.zara.assistant.execution.ExecutionQueue
 import com.zara.assistant.execution.ExecutionRequirement
 import com.zara.assistant.execution.FailureMemory
@@ -28,9 +25,17 @@ import com.zara.assistant.execution.FailureRecord
 import com.zara.assistant.execution.QueueItem
 import com.zara.assistant.execution.RecoveryManager
 import com.zara.assistant.execution.TaskRegistry
+import com.zara.assistant.workflow.WorkflowEngine
+import com.zara.assistant.workflow.WorkflowPlanner
+import com.zara.assistant.workflow.WorkflowState
 import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.*
 
+/**
+ * Layer 6.5B: Compound commands route through WorkflowPlanner + WorkflowEngine
+ * instead of the old ad-hoc DependencyAnalyzer/ConflictResolver loop.
+ * Single-segment commands are unchanged.
+ */
 class VoiceSessionManager(private val context: Context) {
 
     private val scope           = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -146,43 +151,61 @@ class VoiceSessionManager(private val context: Context) {
             val resolvedIntent = ClarificationManager.resolve(corrected)
             val confirmedText  = ClarificationManager.popConfirmedContextText()
             if (confirmedText != null) return runPipelineOnText(confirmedText)
-            // FIX 7: route through executeIntent (not intentRouter.route directly)
-            // so ContextUpdater.update() is called and context is stored after clarification.
             if (resolvedIntent != null) return executeIntent(resolvedIntent)
-            if (ClarificationManager.hasPending()) return "I didn't catch that. Please say the name or number."
+            if (ClarificationManager.hasPending()) return "I didn\'t catch that. Please say the name or number."
         }
 
         // ── Normal pipeline ───────────────────────────────────────────────────
         val segments = CompoundIntentSplitter.split(corrected)
         if (segments.size == 1) return runPipeline(segments[0])
 
-        // FIX 4: Build intents one at a time; stop if clarification/confirmation created
-        val plans = mutableListOf<com.zara.assistant.execution.ExecutionPlan>()
+        // ── Layer 6.5B: Workflow path for compound commands ────────────────
+        return runWorkflow(segments)
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Layer 6.5B: Workflow execution
+    // ────────────────────────────────────────────────────────────────────────
+
+    private suspend fun runWorkflow(segments: List<String>): String {
+        // 1. Build intents for each segment through the full pipeline.
+        //    Stop early if clarification/confirmation is triggered mid-build.
+        val intents = mutableListOf<ZaraIntent>()
         for (seg in segments) {
-            val intent = try { buildIntent(seg) } catch (e: Exception) { continue }
-            val plan = ExecutionPlanner.plan(intent)
-            plans.add(plan)
-            if (ClarificationManager.hasPending() || ConfirmationManager.hasPending()) {
-                if (ClarificationManager.hasPending()) {
-                    return "I need more information: please clarify."
-                }
+            val intent = try { buildIntent(seg) } catch (e: Exception) {
+                ZaraLogger.e("[Workflow] buildIntent failed for seg=\'$seg\': ${e.message}")
+                continue
+            }
+            intents.add(intent)
+            if (ClarificationManager.hasPending()) {
+                return "I need more information before I can continue. Please clarify."
+            }
+            if (ConfirmationManager.hasPending()) {
                 val req = ConfirmationManager.getPending()
                 if (req != null) return req.prompt
-                break
             }
         }
 
-        if (plans.isEmpty()) return "I couldn't process that."
+        if (intents.isEmpty()) return "I couldn\'t process that."
 
-        val analyzed  = DependencyAnalyzer.analyze(plans)
-        val resolved  = ConflictResolver.resolve(analyzed)
+        // 2. Plan the workflow (sequential dependencies).
+        val workflowPlan = WorkflowPlanner.plan(intents)
+
+        // 3. Submit to WorkflowEngine (validates, guards, enqueues).
         ExecutionQueue.clearCompleted()
-        resolved.forEach { ExecutionQueue.enqueue(QueueItem(it)) }
-        ExecutionIntelligenceTelemetry.track("queue_enqueued", detail = "count=${resolved.size}")
+        val submittedPlan = WorkflowEngine.submit(workflowPlan)
 
+        if (submittedPlan.state == WorkflowState.FAILED) {
+            return "I couldn\'t prepare that workflow."
+        }
+
+        // 4. Drain the queue sequentially — identical to existing drain loop.
         val responses = mutableListOf<String>()
+        val enqueuedItems = mutableListOf<QueueItem>()
+
         var item = ExecutionQueue.dequeueNext()
         while (item != null) {
+            enqueuedItems.add(item)
             val plan = item.plan
             try {
                 if (plan.requirements.contains(ExecutionRequirement.CONFIRMATION_REQUIRED)) {
@@ -194,21 +217,30 @@ class VoiceSessionManager(private val context: Context) {
                 }
                 val result = executeIntent(plan.intent)
                 ExecutionQueue.markCompleted(plan.id)
-                ExecutionIntelligenceTelemetry.track("task_completed", plan.id)
+                ExecutionIntelligenceTelemetry.track("wf_step_completed", plan.id)
                 responses.add(result)
             } catch (e: Exception) {
-                ZaraLogger.e("Queue task failed: ${e.message}")
+                ZaraLogger.e("[Workflow] step failed: ${e.message}")
                 ExecutionQueue.markFailed(plan.id)
                 val rec = FailureRecord(plan.id, plan.intent, e.message ?: "unknown", listOf("try again", "cancel"))
                 FailureMemory.record(rec)
                 RecoveryManager.recordFailure(rec)
-                ExecutionIntelligenceTelemetry.track("task_failed", plan.id, e.message)
-                responses.add("Couldn't complete one of those actions.")
+                ExecutionIntelligenceTelemetry.track("wf_step_failed", plan.id, e.message)
+                responses.add("Couldn\'t complete one of those actions.")
+                // STOP_WORKFLOW: default policy — break on first failure
+                break
             }
             item = ExecutionQueue.dequeueNext()
         }
+
+        // 5. Finalize workflow state.
+        WorkflowEngine.finalize(submittedPlan, enqueuedItems)
+        ExecutionIntelligenceTelemetry.track("wf_finalized", submittedPlan.workflowId, "state=${submittedPlan.state}")
+
         return responses.joinToString(". ")
     }
+
+    // ────────────────────────────────────────────────────────────────────────
 
     private suspend fun runPipeline(text: String): String {
         return when (val ctxResult = ContextResolver.resolve(text)) {
