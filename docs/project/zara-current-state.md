@@ -4,237 +4,111 @@ Last Updated: June 2026
 
 ---
 
-# Current Development Position
+# Current Stable Version
 
-The project has completed foundational stabilization work and is preparing to implement the Entity / Slot Extraction Layer.
+v0.6.5a-stable
 
----
+# Active Development Branch
 
-# Completed Work
+layer6-5b-dev
 
-## App Launching
+# Development Rule
 
-Status:
-
-Working.
-
-Features:
-
-* Installed app discovery
-* QUERY_ALL_PACKAGES support
-* Alias resolution
-* Fuzzy matching
-* Clarification support
-
-Examples:
-
-* ig → Instagram
-* yt → YouTube
-* ff → Free Fire
-* ff max → Free Fire Max
+All future Zara development occurs on layer6-5b-dev.
+Main remains protected until audited and merged.
 
 ---
 
-## AppResolver v2
+# Completed Layers
 
-Status:
-
-Complete.
-
-Capabilities:
-
-Priority Order:
-
-1. Exact Match
-2. Alias Match
-3. StartsWith Match
-4. Contains Match
-5. Fuzzy Match
-6. Clarification
-
-Notes:
-
-Short aliases use explicit alias mapping.
-
-Fuzzy matching is length-gated.
+✓ Layer 1 — Wakeword Foundation
+✓ Layer 2 — STT Pipeline
+✓ Layer 3 — Intent Classification
+✓ Layer 4A — Slot Infrastructure
+✓ Layer 4B — Core Slot Extraction
+✓ Layer 5.x — Clarification & Entity Resolution
+✓ Layer 6.0 — Session Context Foundation
+✓ Layer 6 Contact Hardening
+✓ Layer 6 Execution Consistency Fixes
+✓ Layer 6.5A — Execution Intelligence Core
 
 ---
 
-## STT Correction Layer
+# Working Features
 
-Status:
-
-Complete.
-
-Bug Fixed:
-
-Previously:
-
-instagram
-↓
-
-instagramgram
-
-snapchat
-↓
-
-snapchatchat
-
-Root Cause:
-
-Unbounded string replacement.
-
-Fix:
-
-Word-boundary regex replacement.
-
-Result:
-
-No duplicate expansions.
-
----
-
-## Audio Stability
-
-Status:
-
-Complete.
-
-Implemented:
-
-* AudioFocus acquisition
-* AudioFocus release
-* STT callback cleanup
-* Resource lifecycle cleanup
-
-Purpose:
-
-Improve long-session stability and audio coexistence.
-
----
-
-## Wakeword Stability Audit
-
-Status:
-
-Completed.
-
-Result:
-
-No evidence of:
-
-* Listener accumulation
-* Coroutine accumulation
-* Restart loops
-* Long-session degradation
-
-Notes:
-
-EnergyVadEngine remains a stub and is a future implementation target.
-
----
-
-# Known Limitations
-
-## Missing Entity Extraction
-
-Examples that are not fully supported:
-
-* send hi to malvin on whatsapp
-* call ahmed
-* message dad
-* email john
-
-Reason:
-
-No generalized slot extraction layer.
-
----
-
-## Missing Semantic Understanding
-
-Examples:
-
-* Heavy STT mistakes
-* Natural language variations
-
-Planned Solution:
-
-MiniLM fallback layer.
-
----
-
-## Missing Context Layer
-
-Examples:
-
-User:
-Send a message to Malvin.
-
-Zara:
-What should I send?
-
-User:
-Tell him I'll be late.
-
-Currently unsupported.
+✓ Contact Resolution
+✓ Clarification Flow
+✓ Contact Deduplication
+✓ Context Recall
+✓ Pronoun Resolution
+✓ WhatsApp Routing
+✓ SMS Routing
+✓ App Routing
+✓ Execution Consistency
+✓ Confirmation Engine
+✓ Cancellation Engine
+✓ Recovery Engine
+✓ Execution Queue
+✓ Dependency Analysis
+✓ Task Registry
+✓ Failure Memory
+✓ Execution Contracts
 
 ---
 
 # Active Roadmap
 
-Current Target:
+## Next Target
 
-Layer 4
+Layer 6.5B — Workflow Chaining
 
-Entity / Slot Extraction Layer
+## Future Roadmap
 
-Goals:
+Layer 6.5C — Multi-Step Task Execution
 
-* Recipient extraction
-* App extraction
-* Message extraction
-* General slot extraction
-* Reusable architecture
+Layer 7 — Memory System
+- Session Memory
+- Persistent Memory
+- Memory Retrieval
+- Memory Management
+- Adaptive Personalization
 
-Future:
+Layer 8 — Tool Ecosystem
 
-Layer 8
-
-MiniLM Semantic Understanding Layer
-
-Future:
-
-Layer 9
-
-Conversation Layer
+Layer 9 — Agent Orchestration
 
 ---
 
 # Important Files
 
 Intent Layer:
-
-* LocalIntentClassifier.kt
+- LocalIntentClassifier.kt
 
 Execution Layer:
-
-* ActionExecutor.kt
-* AppActions.kt
+- ActionExecutor.kt
+- AppActions.kt
+- ExecutionQueue.kt
+- ExecutionPlanner.kt
+- ConfirmationManager.kt
+- RecoveryManager.kt
 
 Resolver Layer:
+- AppResolver.kt
+- EntityResolver.kt
+- ContactResolver.kt
+- PersonalContactResolver.kt
 
-* AppResolver.kt
+Context Layer:
+- ConversationContextManager.kt
+- ContextResolver.kt
 
 Voice Pipeline:
-
-* VoiceSessionManager.kt
-* WakeWordManager.kt
-* SttManager.kt
+- VoiceSessionManager.kt
+- WakeWordManager.kt
+- SttManager.kt
 
 Service Layer:
-
-* ZaraForegroundService.kt
+- ZaraForegroundService.kt
 
 ---
 
@@ -247,3 +121,4 @@ Service Layer:
 5. Keep CPU and battery usage minimal.
 6. Avoid premature optimization.
 7. Preserve architectural boundaries.
+8. All development on layer6-5b-dev. Do not commit to main.
