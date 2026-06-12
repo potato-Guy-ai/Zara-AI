@@ -1,6 +1,9 @@
 package com.zara.assistant.workflow
 
 import com.zara.assistant.core.ExecutionGuard
+import com.zara.assistant.core.IntentAction
+import com.zara.assistant.core.IntentExtra
+import com.zara.assistant.core.ZaraIntent
 import com.zara.assistant.execution.ExecutionPlanner
 import com.zara.assistant.execution.ExecutionQueue
 import com.zara.assistant.execution.QueueItem
@@ -8,49 +11,51 @@ import com.zara.assistant.execution.TaskState
 import com.zara.assistant.utils.ZaraLogger
 
 /**
- * Layer 6.5B — Workflow Engine.
+ * Layer 6.5B + Completion Patch
  *
- * Responsibilities:
- *   1. Validate a WorkflowPlan (non-empty, dependencies consistent).
- *   2. Guard each step intent via ExecutionGuard.
- *   3. Convert each WorkflowStep into an ExecutionPlan with dependsOnId wired.
- *   4. Enqueue all plans into ExecutionQueue in order.
- *   5. Track workflow state transitions.
+ * FIX 1: submit() injects WorkflowContextSnapshot person data into
+ *   contact-based step intents that have no PHONE_NUMBER/CONTACT_NAME.
+ *   This ensures "message him" in step 2 uses the snapshot-captured person
+ *   rather than whatever live context exists at execution time.
  *
- * Does NOT replace ExecutionQueue or ExecutionGuard — wraps them.
- * Does NOT execute intents — that remains in VoiceSessionManager/ActionExecutor.
- * Sequential only. No parallel execution. No background work.
- *
- * Execution order enforced by ExecutionQueue.dequeueNext() dependency checks
- * (dependsOnId → must be COMPLETED before dependent runs).
+ * FIX 2: submit() returns WorkflowQueueHandle containing all planIds
+ *   belonging to this workflow. cancelWorkflowItems(handle) cancels
+ *   only workflow-owned PENDING items — no effect on unrelated queue items.
  */
 object WorkflowEngine {
 
-    private var idCounter = 0
-    private fun nextPlanId() = "wp_${++idCounter}"
+    private val CONTACT_ACTIONS = setOf(
+        IntentAction.CALL,
+        IntentAction.SEND_WHATSAPP,
+        IntentAction.SEND_SMS
+    )
+
+    /** IDs of ExecutionPlans enqueued for one workflow run. */
+    data class WorkflowQueueHandle(
+        val workflowId: String,
+        val planIds: List<String>
+    )
 
     /**
-     * Validate, guard, and enqueue all steps of a WorkflowPlan.
-     * Returns the WorkflowPlan with state updated to RUNNING,
-     * or FAILED if validation fails.
-     *
-     * @param plan The WorkflowPlan produced by WorkflowPlanner.
-     * @return     The same plan (mutated state field), ready to drain via ExecutionQueue.
+     * Validate, guard, inject snapshot, and enqueue all steps.
+     * Returns (mutated) plan + a handle of all enqueued planIds.
      */
-    fun submit(plan: WorkflowPlan): WorkflowPlan {
+    fun submit(plan: WorkflowPlan): Pair<WorkflowPlan, WorkflowQueueHandle> {
         if (!validate(plan)) {
             plan.state = WorkflowState.FAILED
             ZaraLogger.e("[WorkflowEngine] Validation failed for ${plan.workflowId}")
-            return plan
+            return Pair(plan, WorkflowQueueHandle(plan.workflowId, emptyList()))
         }
 
         plan.state = WorkflowState.RUNNING
 
-        // Map stepId → ExecutionPlan.id so we can wire dependsOnId
         val stepIdToPlanId = mutableMapOf<String, String>()
+        val allPlanIds     = mutableListOf<String>()
 
         for (step in plan.steps) {
-            val guardedIntent  = ExecutionGuard.guard(step.intent)
+            // FIX 1: inject snapshot person into contact-based intents lacking resolution
+            val enrichedIntent = injectSnapshotContext(step.intent, plan.contextSnapshot)
+            val guardedIntent  = ExecutionGuard.guard(enrichedIntent)
             val dependsOnPlanId = step.dependsOnStepId?.let { stepIdToPlanId[it] }
 
             val execPlan = ExecutionPlanner.plan(guardedIntent).copy(
@@ -58,19 +63,26 @@ object WorkflowEngine {
             )
 
             stepIdToPlanId[step.stepId] = execPlan.id
+            allPlanIds.add(execPlan.id)
             ExecutionQueue.enqueue(QueueItem(execPlan))
 
             ZaraLogger.d("[WorkflowEngine] enqueued step=${step.stepId} planId=${execPlan.id} dependsOn=$dependsOnPlanId")
         }
 
         ZaraLogger.d("[WorkflowEngine] ${plan.workflowId} submitted ${plan.steps.size} steps")
-        return plan
+        return Pair(plan, WorkflowQueueHandle(plan.workflowId, allPlanIds))
     }
 
     /**
-     * Mark workflow terminal based on queue outcomes.
-     * Called after all queue items from this workflow have been drained.
+     * FIX 2: Cancel all PENDING queue items owned by this workflow.
+     * Called after STOP_WORKFLOW break. Does not touch unrelated items.
      */
+    fun cancelWorkflowItems(handle: WorkflowQueueHandle) {
+        val planIdSet = handle.planIds.toHashSet()
+        ExecutionQueue.cancelByIds(planIdSet)
+        ZaraLogger.d("[WorkflowEngine] cancelled remaining items for ${handle.workflowId}")
+    }
+
     fun finalize(plan: WorkflowPlan, queueItems: List<QueueItem>): WorkflowPlan {
         val anyFailed    = queueItems.any { it.state == TaskState.FAILED }
         val anyCancelled = queueItems.any { it.state == TaskState.CANCELLED }
@@ -87,6 +99,26 @@ object WorkflowEngine {
         }
         ZaraLogger.d("[WorkflowEngine] ${plan.workflowId} finalized -> ${plan.state}")
         return plan
+    }
+
+    // ── FIX 1: Snapshot injection ───────────────────────────────────────────────
+
+    private fun injectSnapshotContext(intent: ZaraIntent, snapshot: WorkflowContextSnapshot): ZaraIntent {
+        // Only enrich contact-based intents that have no resolved contact yet
+        if (intent.action !in CONTACT_ACTIONS) return intent
+        if (intent.extra.containsKey(IntentExtra.PHONE_NUMBER)) return intent
+        if (intent.extra.containsKey(IntentExtra.CONTACT_NAME)) return intent
+
+        val person = snapshot.person ?: return intent
+        if (person.isExpired()) return intent
+
+        val newExtra = intent.extra.toMutableMap()
+        newExtra[IntentExtra.CONTACT_NAME] = person.contactName
+        if (person.phoneNumber != null) {
+            newExtra[IntentExtra.PHONE_NUMBER] = person.phoneNumber
+        }
+        ZaraLogger.d("[WorkflowEngine] snapshot injected person=${person.contactName} into ${intent.action}")
+        return intent.copy(extra = newExtra)
     }
 
     // ── Validation ──────────────────────────────────────────────────────────

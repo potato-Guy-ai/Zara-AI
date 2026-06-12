@@ -31,11 +31,6 @@ import com.zara.assistant.workflow.WorkflowState
 import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.*
 
-/**
- * Layer 6.5B: Compound commands route through WorkflowPlanner + WorkflowEngine
- * instead of the old ad-hoc DependencyAnalyzer/ConflictResolver loop.
- * Single-segment commands are unchanged.
- */
 class VoiceSessionManager(private val context: Context) {
 
     private val scope           = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -103,7 +98,6 @@ class VoiceSessionManager(private val context: Context) {
         val corrected = correctionLayer.correct(rawText)
         val lower = corrected.trim().lowercase()
 
-        // ── Cancellation ─────────────────────────────────────────────────────
         val CANCEL_WORDS = setOf("cancel", "stop", "leave it", "never mind", "nevermind")
         if (CANCEL_WORDS.any { lower == it }) {
             ExecutionQueue.getWaiting()?.let { ExecutionQueue.markWaitingCancelled(it.plan.id) }
@@ -114,7 +108,6 @@ class VoiceSessionManager(private val context: Context) {
             return "Okay, cancelled."
         }
 
-        // ── Recovery ──────────────────────────────────────────────────────────
         if (RecoveryManager.isResumeCommand(lower)) {
             val failure = RecoveryManager.popForRetry()
             if (failure != null) {
@@ -123,7 +116,6 @@ class VoiceSessionManager(private val context: Context) {
             }
         }
 
-        // ── Confirmation check ────────────────────────────────────────────────
         if (ConfirmationManager.hasPending()) {
             val confirmed = ConfirmationManager.resolve(corrected)
             return when (confirmed) {
@@ -146,7 +138,6 @@ class VoiceSessionManager(private val context: Context) {
             }
         }
 
-        // ── Clarification check ───────────────────────────────────────────────
         if (ClarificationManager.hasPending()) {
             val resolvedIntent = ClarificationManager.resolve(corrected)
             val confirmedText  = ClarificationManager.popConfirmedContextText()
@@ -155,21 +146,13 @@ class VoiceSessionManager(private val context: Context) {
             if (ClarificationManager.hasPending()) return "I didn\'t catch that. Please say the name or number."
         }
 
-        // ── Normal pipeline ───────────────────────────────────────────────────
         val segments = CompoundIntentSplitter.split(corrected)
         if (segments.size == 1) return runPipeline(segments[0])
 
-        // ── Layer 6.5B: Workflow path for compound commands ────────────────
         return runWorkflow(segments)
     }
 
-    // ────────────────────────────────────────────────────────────────────────
-    // Layer 6.5B: Workflow execution
-    // ────────────────────────────────────────────────────────────────────────
-
     private suspend fun runWorkflow(segments: List<String>): String {
-        // 1. Build intents for each segment through the full pipeline.
-        //    Stop early if clarification/confirmation is triggered mid-build.
         val intents = mutableListOf<ZaraIntent>()
         for (seg in segments) {
             val intent = try { buildIntent(seg) } catch (e: Exception) {
@@ -177,9 +160,7 @@ class VoiceSessionManager(private val context: Context) {
                 continue
             }
             intents.add(intent)
-            if (ClarificationManager.hasPending()) {
-                return "I need more information before I can continue. Please clarify."
-            }
+            if (ClarificationManager.hasPending()) return "I need more information before I can continue. Please clarify."
             if (ConfirmationManager.hasPending()) {
                 val req = ConfirmationManager.getPending()
                 if (req != null) return req.prompt
@@ -188,20 +169,19 @@ class VoiceSessionManager(private val context: Context) {
 
         if (intents.isEmpty()) return "I couldn\'t process that."
 
-        // 2. Plan the workflow (sequential dependencies).
         val workflowPlan = WorkflowPlanner.plan(intents)
 
-        // 3. Submit to WorkflowEngine (validates, guards, enqueues).
         ExecutionQueue.clearCompleted()
-        val submittedPlan = WorkflowEngine.submit(workflowPlan)
+        // FIX 2: submit now returns (plan, handle) — handle tracks workflow-owned planIds
+        val (submittedPlan, handle) = WorkflowEngine.submit(workflowPlan)
 
         if (submittedPlan.state == WorkflowState.FAILED) {
             return "I couldn\'t prepare that workflow."
         }
 
-        // 4. Drain the queue sequentially — identical to existing drain loop.
-        val responses = mutableListOf<String>()
+        val responses     = mutableListOf<String>()
         val enqueuedItems = mutableListOf<QueueItem>()
+        var stepFailed    = false
 
         var item = ExecutionQueue.dequeueNext()
         while (item != null) {
@@ -227,20 +207,22 @@ class VoiceSessionManager(private val context: Context) {
                 RecoveryManager.recordFailure(rec)
                 ExecutionIntelligenceTelemetry.track("wf_step_failed", plan.id, e.message)
                 responses.add("Couldn\'t complete one of those actions.")
-                // STOP_WORKFLOW: default policy — break on first failure
-                break
+                stepFailed = true
+                break  // STOP_WORKFLOW
             }
             item = ExecutionQueue.dequeueNext()
         }
 
-        // 5. Finalize workflow state.
+        // FIX 2: cancel remaining workflow-owned PENDING items on failure
+        if (stepFailed) {
+            WorkflowEngine.cancelWorkflowItems(handle)
+        }
+
         WorkflowEngine.finalize(submittedPlan, enqueuedItems)
         ExecutionIntelligenceTelemetry.track("wf_finalized", submittedPlan.workflowId, "state=${submittedPlan.state}")
 
         return responses.joinToString(". ")
     }
-
-    // ────────────────────────────────────────────────────────────────────────
 
     private suspend fun runPipeline(text: String): String {
         return when (val ctxResult = ContextResolver.resolve(text)) {
