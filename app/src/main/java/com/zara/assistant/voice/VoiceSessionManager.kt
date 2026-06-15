@@ -1,6 +1,9 @@
 package com.zara.assistant.voice
 
 import android.content.Context
+import com.zara.assistant.continuation.ContinuationContext
+import com.zara.assistant.continuation.ContinuationResolver
+import com.zara.assistant.continuation.ContinuationScope
 import com.zara.assistant.context.ContextResolver
 import com.zara.assistant.context.ContextUpdater
 import com.zara.assistant.core.AppActionPlanner
@@ -31,6 +34,11 @@ import com.zara.assistant.workflow.WorkflowState
 import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.*
 
+/**
+ * Layer 6.5C: ContinuationResolver inserted at top of processInput(),
+ * before cancellation, confirmation, clarification, and NLP blocks.
+ * ContinuationContext activated/deactivated on state transitions.
+ */
 class VoiceSessionManager(private val context: Context) {
 
     private val scope           = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -98,46 +106,24 @@ class VoiceSessionManager(private val context: Context) {
         val corrected = correctionLayer.correct(rawText)
         val lower = corrected.trim().lowercase()
 
+        // ── Layer 6.5C: Continuation resolver — FIRST, before everything ──────────
+        ContinuationResolver.resolve(corrected) { executeIntent(it) }
+            ?.let { return it }
+
+        // ── Cancellation ─────────────────────────────────────────────────────
         val CANCEL_WORDS = setOf("cancel", "stop", "leave it", "never mind", "nevermind")
         if (CANCEL_WORDS.any { lower == it }) {
             ExecutionQueue.getWaiting()?.let { ExecutionQueue.markWaitingCancelled(it.plan.id) }
             ConfirmationManager.clear()
             ExecutionQueue.cancelAll()
             ClarificationManager.clear()
+            RecoveryManager.clear()
+            ContinuationContext.clearAll()
             ExecutionIntelligenceTelemetry.track("cancel_all")
             return "Okay, cancelled."
         }
 
-        if (RecoveryManager.isResumeCommand(lower)) {
-            val failure = RecoveryManager.popForRetry()
-            if (failure != null) {
-                ExecutionIntelligenceTelemetry.track("recovery_retry", failure.planId)
-                return executeIntent(failure.intent)
-            }
-        }
-
-        if (ConfirmationManager.hasPending()) {
-            val confirmed = ConfirmationManager.resolve(corrected)
-            return when (confirmed) {
-                true -> {
-                    val request = ConfirmationManager.pop()
-                    if (request != null) {
-                        ExecutionQueue.markWaitingCompleted(request.planId)
-                        ExecutionIntelligenceTelemetry.track("confirmation_yes", request.planId)
-                        executeIntent(request.plan.intent)
-                    } else "Okay."
-                }
-                false -> {
-                    val waiting = ExecutionQueue.getWaiting()
-                    if (waiting != null) ExecutionQueue.markWaitingCancelled(waiting.plan.id)
-                    ConfirmationManager.clear()
-                    ExecutionIntelligenceTelemetry.track("confirmation_no")
-                    "Okay, cancelled."
-                }
-                null -> "Please say yes or no."
-            }
-        }
-
+        // ── Clarification check ───────────────────────────────────────────────
         if (ClarificationManager.hasPending()) {
             val resolvedIntent = ClarificationManager.resolve(corrected)
             val confirmedText  = ClarificationManager.popConfirmedContextText()
@@ -146,9 +132,9 @@ class VoiceSessionManager(private val context: Context) {
             if (ClarificationManager.hasPending()) return "I didn\'t catch that. Please say the name or number."
         }
 
+        // ── Normal pipeline ───────────────────────────────────────────────────
         val segments = CompoundIntentSplitter.split(corrected)
         if (segments.size == 1) return runPipeline(segments[0])
-
         return runWorkflow(segments)
     }
 
@@ -156,28 +142,30 @@ class VoiceSessionManager(private val context: Context) {
         val intents = mutableListOf<ZaraIntent>()
         for (seg in segments) {
             val intent = try { buildIntent(seg) } catch (e: Exception) {
-                ZaraLogger.e("[Workflow] buildIntent failed for seg=\'$seg\': ${e.message}")
+                ZaraLogger.e("[Workflow] buildIntent failed: ${e.message}")
                 continue
             }
             intents.add(intent)
-            if (ClarificationManager.hasPending()) return "I need more information before I can continue. Please clarify."
+            if (ClarificationManager.hasPending()) return "I need more information. Please clarify."
             if (ConfirmationManager.hasPending()) {
                 val req = ConfirmationManager.getPending()
-                if (req != null) return req.prompt
+                if (req != null) {
+                    ContinuationContext.activate(ContinuationScope.CONFIRMATION)
+                    return req.prompt
+                }
             }
         }
 
         if (intents.isEmpty()) return "I couldn\'t process that."
 
         val workflowPlan = WorkflowPlanner.plan(intents)
-
         ExecutionQueue.clearCompleted()
-        // FIX 2: submit now returns (plan, handle) — handle tracks workflow-owned planIds
         val (submittedPlan, handle) = WorkflowEngine.submit(workflowPlan)
 
-        if (submittedPlan.state == WorkflowState.FAILED) {
-            return "I couldn\'t prepare that workflow."
-        }
+        if (submittedPlan.state == WorkflowState.FAILED) return "I couldn\'t prepare that workflow."
+
+        // Activate workflow continuation scope
+        ContinuationContext.activate(ContinuationScope.WORKFLOW)
 
         val responses     = mutableListOf<String>()
         val enqueuedItems = mutableListOf<QueueItem>()
@@ -192,6 +180,7 @@ class VoiceSessionManager(private val context: Context) {
                     val prompt = buildConfirmationPrompt(plan.intent)
                     ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))
                     ExecutionQueue.markWaiting(plan.id)
+                    ContinuationContext.activate(ContinuationScope.CONFIRMATION)
                     responses.add(prompt)
                     break
                 }
@@ -202,21 +191,20 @@ class VoiceSessionManager(private val context: Context) {
             } catch (e: Exception) {
                 ZaraLogger.e("[Workflow] step failed: ${e.message}")
                 ExecutionQueue.markFailed(plan.id)
-                val rec = FailureRecord(plan.id, plan.intent, e.message ?: "unknown", listOf("try again", "cancel"))
+                val rec = FailureRecord(plan.id, plan.intent, e.message ?: "unknown", listOf("retry", "cancel"))
                 FailureMemory.record(rec)
                 RecoveryManager.recordFailure(rec)
+                ContinuationContext.activate(ContinuationScope.RECOVERY)
                 ExecutionIntelligenceTelemetry.track("wf_step_failed", plan.id, e.message)
-                responses.add("Couldn\'t complete one of those actions.")
+                responses.add("Couldn\'t complete one of those actions. Say \'retry\' to try again.")
                 stepFailed = true
-                break  // STOP_WORKFLOW
+                break
             }
             item = ExecutionQueue.dequeueNext()
         }
 
-        // FIX 2: cancel remaining workflow-owned PENDING items on failure
-        if (stepFailed) {
-            WorkflowEngine.cancelWorkflowItems(handle)
-        }
+        if (stepFailed) WorkflowEngine.cancelWorkflowItems(handle)
+        if (ExecutionQueue.pendingCount() == 0) ContinuationContext.deactivate(ContinuationScope.WORKFLOW)
 
         WorkflowEngine.finalize(submittedPlan, enqueuedItems)
         ExecutionIntelligenceTelemetry.track("wf_finalized", submittedPlan.workflowId, "state=${submittedPlan.state}")
