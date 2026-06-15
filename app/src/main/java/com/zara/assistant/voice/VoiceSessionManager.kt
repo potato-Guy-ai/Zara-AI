@@ -28,6 +28,11 @@ import com.zara.assistant.execution.FailureRecord
 import com.zara.assistant.execution.QueueItem
 import com.zara.assistant.execution.RecoveryManager
 import com.zara.assistant.execution.TaskRegistry
+import com.zara.assistant.streaming.InteractionEventPublisher
+import com.zara.assistant.streaming.PipelineState
+import com.zara.assistant.streaming.PipelineStateMachine
+import com.zara.assistant.streaming.StablePartialRenderer
+import com.zara.assistant.streaming.ZaraInteractionEvent
 import com.zara.assistant.workflow.WorkflowEngine
 import com.zara.assistant.workflow.WorkflowPlanner
 import com.zara.assistant.workflow.WorkflowState
@@ -35,9 +40,10 @@ import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.*
 
 /**
- * Layer 6.5C: ContinuationResolver inserted at top of processInput(),
- * before cancellation, confirmation, clarification, and NLP blocks.
- * ContinuationContext activated/deactivated on state transitions.
+ * Layer 6.5C: ContinuationResolver at top of processInput().
+ * Layer 6.5E: PipelineStateMachine + InteractionEventPublisher wired into all key transitions.
+ *             StablePartialRenderer connected to SttManager partial callbacks.
+ *             No execution logic changed. Events are fire-and-forget.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -58,6 +64,7 @@ class VoiceSessionManager(private val context: Context) {
     fun stop() {
         wakeWordManager.stop(); sttManager.stop(); ttsManager.stop()
         isListening = false; scope.cancel()
+        PipelineStateMachine.transition(PipelineState.COMPLETED)
     }
 
     private fun onWakeWordDetected() {
@@ -67,13 +74,23 @@ class VoiceSessionManager(private val context: Context) {
     }
 
     private fun startListeningSession() {
-        sttManager.startListening { rawText ->
-            if (rawText.isBlank()) { isListening = false; wakeWordManager.resume(); return@startListening }
-            scope.launch {
-                val response = processInput(rawText)
-                ttsManager.speak(response) { isListening = false; wakeWordManager.resume() }
+        InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStarted)
+        PipelineStateMachine.transition(PipelineState.LISTENING)
+        StablePartialRenderer.reset()
+        sttManager.startListening(
+            onPartial = { partial -> StablePartialRenderer.onPartial(partial) },
+            onResult  = { rawText ->
+                InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStopped)
+                if (rawText.isBlank()) {
+                    isListening = false; wakeWordManager.resume(); return@startListening
+                }
+                StablePartialRenderer.onFinal(rawText)
+                scope.launch {
+                    val response = processInput(rawText)
+                    ttsManager.speak(response) { isListening = false; wakeWordManager.resume() }
+                }
             }
-        }
+        )
     }
 
     fun startManualListening(onResponse: (String) -> Unit) {
@@ -83,20 +100,29 @@ class VoiceSessionManager(private val context: Context) {
     }
 
     private fun startListeningSession(onResponse: (String) -> Unit) {
-        sttManager.startListening { rawText ->
-            if (rawText.isBlank()) {
-                isListening = false; wakeWordManager.resume(); onResponse(""); return@startListening
+        InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStarted)
+        PipelineStateMachine.transition(PipelineState.LISTENING)
+        StablePartialRenderer.reset()
+        sttManager.startListening(
+            onPartial = { partial -> StablePartialRenderer.onPartial(partial) },
+            onResult  = { rawText ->
+                InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStopped)
+                if (rawText.isBlank()) {
+                    isListening = false; wakeWordManager.resume(); onResponse(""); return@startListening
+                }
+                StablePartialRenderer.onFinal(rawText)
+                scope.launch {
+                    val response = processInput(rawText)
+                    isListening = false; wakeWordManager.resume()
+                    withContext(Dispatchers.Main) { onResponse(response) }
+                }
             }
-            scope.launch {
-                val response = processInput(rawText)
-                isListening = false; wakeWordManager.resume()
-                withContext(Dispatchers.Main) { onResponse(response) }
-            }
-        }
+        )
     }
 
     fun processText(text: String, onResponse: (String) -> Unit) {
         scope.launch {
+            InteractionEventPublisher.publish(ZaraInteractionEvent.FinalStt(text))
             val response = processInput(text)
             withContext(Dispatchers.Main) { onResponse(response) }
         }
@@ -106,7 +132,9 @@ class VoiceSessionManager(private val context: Context) {
         val corrected = correctionLayer.correct(rawText)
         val lower = corrected.trim().lowercase()
 
-        // ── Layer 6.5C: Continuation resolver — FIRST, before everything ──────────
+        PipelineStateMachine.transition(PipelineState.PROCESSING)
+
+        // ── Layer 6.5C: Continuation resolver — FIRST ─────────────────────────
         ContinuationResolver.resolve(corrected) { executeIntent(it) }
             ?.let { return it }
 
@@ -120,16 +148,18 @@ class VoiceSessionManager(private val context: Context) {
             RecoveryManager.clear()
             ContinuationContext.clearAll()
             ExecutionIntelligenceTelemetry.track("cancel_all")
+            PipelineStateMachine.transition(PipelineState.COMPLETED)
             return "Okay, cancelled."
         }
 
         // ── Clarification check ───────────────────────────────────────────────
         if (ClarificationManager.hasPending()) {
+            PipelineStateMachine.transition(PipelineState.WAITING_CLARIFICATION)
             val resolvedIntent = ClarificationManager.resolve(corrected)
             val confirmedText  = ClarificationManager.popConfirmedContextText()
             if (confirmedText != null) return runPipelineOnText(confirmedText)
             if (resolvedIntent != null) return executeIntent(resolvedIntent)
-            if (ClarificationManager.hasPending()) return "I didn\'t catch that. Please say the name or number."
+            if (ClarificationManager.hasPending()) return "I didn't catch that. Please say the name or number."
         }
 
         // ── Normal pipeline ───────────────────────────────────────────────────
@@ -146,48 +176,65 @@ class VoiceSessionManager(private val context: Context) {
                 continue
             }
             intents.add(intent)
-            if (ClarificationManager.hasPending()) return "I need more information. Please clarify."
+            if (ClarificationManager.hasPending()) {
+                PipelineStateMachine.transition(PipelineState.WAITING_CLARIFICATION)
+                InteractionEventPublisher.publish(ZaraInteractionEvent.ClarificationRequired(emptyList()))
+                return "I need more information. Please clarify."
+            }
             if (ConfirmationManager.hasPending()) {
                 val req = ConfirmationManager.getPending()
                 if (req != null) {
                     ContinuationContext.activate(ContinuationScope.CONFIRMATION)
+                    PipelineStateMachine.transition(PipelineState.WAITING_CONFIRMATION)
+                    InteractionEventPublisher.publish(ZaraInteractionEvent.ConfirmationRequired(req.prompt))
                     return req.prompt
                 }
             }
         }
 
-        if (intents.isEmpty()) return "I couldn\'t process that."
+        if (intents.isEmpty()) return "I couldn't process that."
 
         val workflowPlan = WorkflowPlanner.plan(intents)
         ExecutionQueue.clearCompleted()
         val (submittedPlan, handle) = WorkflowEngine.submit(workflowPlan)
 
-        if (submittedPlan.state == WorkflowState.FAILED) return "I couldn\'t prepare that workflow."
+        if (submittedPlan.state == WorkflowState.FAILED) return "I couldn't prepare that workflow."
 
-        // Activate workflow continuation scope
         ContinuationContext.activate(ContinuationScope.WORKFLOW)
+        PipelineStateMachine.transition(PipelineState.WORKFLOW_RUNNING)
+        InteractionEventPublisher.publish(ZaraInteractionEvent.WorkflowStarted(intents.size))
 
         val responses     = mutableListOf<String>()
         val enqueuedItems = mutableListOf<QueueItem>()
         var stepFailed    = false
+        var stepIndex     = 0
 
         var item = ExecutionQueue.dequeueNext()
         while (item != null) {
             enqueuedItems.add(item)
             val plan = item.plan
+            InteractionEventPublisher.publish(ZaraInteractionEvent.WorkflowStepStarted(stepIndex, plan.intent.action))
             try {
                 if (plan.requirements.contains(ExecutionRequirement.CONFIRMATION_REQUIRED)) {
                     val prompt = buildConfirmationPrompt(plan.intent)
                     ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))
                     ExecutionQueue.markWaiting(plan.id)
                     ContinuationContext.activate(ContinuationScope.CONFIRMATION)
+                    PipelineStateMachine.transition(PipelineState.WAITING_CONFIRMATION)
+                    InteractionEventPublisher.publish(ZaraInteractionEvent.ConfirmationRequired(prompt))
                     responses.add(prompt)
                     break
                 }
+                PipelineStateMachine.transition(PipelineState.EXECUTING)
+                InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionStarted(plan.intent.action))
                 val result = executeIntent(plan.intent)
                 ExecutionQueue.markCompleted(plan.id)
                 ExecutionIntelligenceTelemetry.track("wf_step_completed", plan.id)
+                InteractionEventPublisher.publish(ZaraInteractionEvent.WorkflowStepCompleted(stepIndex, result))
+                InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionCompleted(result))
+                PipelineStateMachine.transition(PipelineState.WORKFLOW_RUNNING)
                 responses.add(result)
+                stepIndex++
             } catch (e: Exception) {
                 ZaraLogger.e("[Workflow] step failed: ${e.message}")
                 ExecutionQueue.markFailed(plan.id)
@@ -195,8 +242,11 @@ class VoiceSessionManager(private val context: Context) {
                 FailureMemory.record(rec)
                 RecoveryManager.recordFailure(rec)
                 ContinuationContext.activate(ContinuationScope.RECOVERY)
+                PipelineStateMachine.transition(PipelineState.WAITING_RECOVERY)
+                InteractionEventPublisher.publish(ZaraInteractionEvent.RecoveryRequired)
+                InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionFailed(e.message ?: "unknown"))
                 ExecutionIntelligenceTelemetry.track("wf_step_failed", plan.id, e.message)
-                responses.add("Couldn\'t complete one of those actions. Say \'retry\' to try again.")
+                responses.add("Couldn't complete one of those actions. Say 'retry' to try again.")
                 stepFailed = true
                 break
             }
@@ -208,6 +258,8 @@ class VoiceSessionManager(private val context: Context) {
 
         WorkflowEngine.finalize(submittedPlan, enqueuedItems)
         ExecutionIntelligenceTelemetry.track("wf_finalized", submittedPlan.workflowId, "state=${submittedPlan.state}")
+        InteractionEventPublisher.publish(ZaraInteractionEvent.WorkflowCompleted(responses))
+        PipelineStateMachine.transition(PipelineState.COMPLETED)
 
         return responses.joinToString(". ")
     }
@@ -229,23 +281,57 @@ class VoiceSessionManager(private val context: Context) {
         val classified = classifier.classify(text)
         val slotted    = SlotExtractor.extract(classified)
         val aliased    = PersonalContactResolver.resolve(slotted)
+
+        // Layer 6.5E: publish resolution start events based on intent slots
+        if (aliased.extra.containsKey("recipient") || aliased.action == "CALL") {
+            PipelineStateMachine.transition(PipelineState.RESOLVING_CONTACT)
+            InteractionEventPublisher.publish(ZaraInteractionEvent.ContactResolutionStarted(aliased.target ?: ""))
+        } else if (aliased.action == "OPEN_APP" || aliased.extra.containsKey("app")) {
+            PipelineStateMachine.transition(PipelineState.RESOLVING_APP)
+            InteractionEventPublisher.publish(ZaraInteractionEvent.AppResolutionStarted(aliased.extra["app"] ?: aliased.target ?: ""))
+        }
+
         val resolved   = entityResolver.resolve(aliased)
-        val planned    = AppActionPlanner.plan(resolved)
+
+        // Publish resolution completed
+        val phone = resolved.extra["phone_number"]
+        val pkg   = resolved.extra["app_package"]
+        if (phone != null) InteractionEventPublisher.publish(ZaraInteractionEvent.ContactResolutionCompleted(resolved.extra["contact_name"]))
+        if (pkg   != null) InteractionEventPublisher.publish(ZaraInteractionEvent.AppResolutionCompleted(pkg))
+
+        // Publish clarification if needed
+        if (resolved.extra["needs_clarification"] == "true") {
+            val candidates = resolved.extra["entity_candidates"]?.split("|") ?: emptyList()
+            PipelineStateMachine.transition(PipelineState.WAITING_CLARIFICATION)
+            InteractionEventPublisher.publish(ZaraInteractionEvent.ClarificationRequired(candidates))
+        }
+
+        val planned = AppActionPlanner.plan(resolved)
         return ExecutionGuard.guard(planned)
     }
 
     private suspend fun executeIntent(intent: ZaraIntent): String {
-        val result  = intentRouter.route(intent)
-        ContextUpdater.update(intent, result)
-        val appName = intent.extra[IntentExtra.APP_NAME]
-        val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
-        if (appName != null) TaskRegistry.register(ActiveTask("app", appName, pkg))
-        return result
+        PipelineStateMachine.transition(PipelineState.EXECUTING)
+        InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionStarted(intent.action))
+        return try {
+            val result = intentRouter.route(intent)
+            ContextUpdater.update(intent, result)
+            val appName = intent.extra["app_name"]
+            val pkg     = intent.extra["app_package"]
+            if (appName != null) TaskRegistry.register(ActiveTask("app", appName, pkg))
+            InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionCompleted(result))
+            PipelineStateMachine.transition(PipelineState.COMPLETED)
+            result
+        } catch (e: Exception) {
+            InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionFailed(e.message ?: "unknown"))
+            PipelineStateMachine.transition(PipelineState.FAILED)
+            throw e
+        }
     }
 
     private fun buildConfirmationPrompt(intent: ZaraIntent): String {
-        val contact = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "unknown"
-        val body    = intent.extra[IntentExtra.BODY] ?: ""
+        val contact = intent.extra["contact_name"] ?: intent.target ?: "unknown"
+        val body    = intent.extra["body"] ?: ""
         return when (intent.action) {
             "SEND_WHATSAPP" -> "Message to $contact ready: \"$body\". Send?"
             "SEND_SMS"      -> "SMS to $contact ready: \"$body\". Send?"
