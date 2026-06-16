@@ -4,30 +4,26 @@ import com.zara.assistant.core.ZaraIntent
 import com.zara.assistant.execution.ConfirmationManager
 import com.zara.assistant.execution.ExecutionQueue
 import com.zara.assistant.execution.RecoveryManager
+import com.zara.assistant.media.MediaControlAction
 import com.zara.assistant.utils.ZaraLogger
 
 /**
- * Layer 6.5C — Continuation Resolver.
+ * Layer 6.5C + 6.5F Priority Fix
  *
- * Stateless signal classifier + priority-ordered dispatcher.
- * Called at the top of VoiceSessionManager.processInput() BEFORE the NLP pipeline.
+ * Priority fix: before Recovery handling, check if the text is a media-control
+ * phrase (via MediaControlAction.fromText). If it is, return null immediately
+ * so the NLP pipeline routes it to MEDIA_CONTROL.
  *
- * Resolution priority:
- *   1. ConfirmationManager (CONFIRM / REJECT)
- *   2. RecoveryManager     (RETRY / RESUME)
- *   3. ExecutionQueue      (CONTINUE / NEXT)
- *   4. ContinuationContext.TASK_REGISTRY (PAUSE / PREVIOUS — architecture only, no execution)
- *   5. If no active system: safety message or null (fall through to NLP)
- *
- * Returns:
- *   non-null String — consume the turn, return this response.
- *   null            — not a continuation signal, or no active continuation; pass to NLP.
- *
- * SAFETY: If user says "yes" and nothing awaits confirmation → explicit message.
+ * This preserves:
+ *   "resume"       → Recovery (bare, no qualifier)
+ *   "resume music" → MEDIA_CONTROL (has media qualifier)
+ *   "next song"    → MEDIA_CONTROL
+ *   "pause music"  → MEDIA_CONTROL
+ *   "stop music"   → MEDIA_CONTROL
+ *   "stop"         → cancellation block (unchanged)
  */
 object ContinuationResolver {
 
-    // ── Signal maps ──────────────────────────────────────────────────
     private val CONFIRM_WORDS  = setOf("yes", "yeah", "yep", "sure", "ok", "okay",
                                        "send it", "do it", "proceed", "confirm", "send")
     private val REJECT_WORDS   = setOf("no", "nope", "cancel", "stop", "don't",
@@ -37,7 +33,13 @@ object ContinuationResolver {
     private val PAUSE_WORDS    = setOf("pause")
     private val PREVIOUS_WORDS = setOf("previous", "go back")
 
-    /** Classify raw text to a ContinuationType. Returns null if not a continuation signal. */
+    // Signals that Recovery would consume and that may conflict with media commands
+    private val RECOVERY_SIGNALS = setOf(
+        ContinuationType.RETRY,
+        ContinuationType.RESUME,
+        ContinuationType.CONTINUE
+    )
+
     fun classify(text: String): ContinuationType? {
         val t = text.trim().lowercase()
         return when {
@@ -51,14 +53,6 @@ object ContinuationResolver {
         }
     }
 
-    /**
-     * Main entry point. Returns a response string if this turn is a continuation,
-     * or null to fall through to the NLP pipeline.
-     *
-     * @param text        Raw corrected user input.
-     * @param onExecute   Suspend lambda: given a ZaraIntent, executes it and returns response string.
-     *                    Provided by VoiceSessionManager to avoid circular dependency.
-     */
     suspend fun resolve(
         text: String,
         onExecute: suspend (ZaraIntent) -> String
@@ -73,7 +67,7 @@ object ContinuationResolver {
                     if (request != null) {
                         ExecutionQueue.markWaitingCompleted(request.planId)
                         ContinuationContext.deactivate(ContinuationScope.CONFIRMATION)
-                        ZaraLogger.d("[Continuation] CONFIRM → executing ${request.plan.intent.action}")
+                        ZaraLogger.d("[Continuation] CONFIRM → ${request.plan.intent.action}")
                         onExecute(request.plan.intent)
                     } else "Nothing is waiting for confirmation."
                 }
@@ -91,6 +85,14 @@ object ContinuationResolver {
 
         // ── Priority 2: RecoveryManager ──────────────────────────────────────
         if (RecoveryManager.hasRecoverable()) {
+            // 6.5F Priority Fix: if text is a media-control phrase, let NLP handle it.
+            // "resume music", "pause music", "next song" etc. must not be eaten by Recovery.
+            // Bare "resume", "retry", "continue" still go to Recovery.
+            if (signal in RECOVERY_SIGNALS && MediaControlAction.fromText(text) != null) {
+                ZaraLogger.d("[Continuation] media phrase detected during recovery, passing to NLP: $text")
+                return null
+            }
+
             return when (signal) {
                 ContinuationType.RETRY, ContinuationType.RESUME, ContinuationType.CONTINUE -> {
                     val failure = RecoveryManager.popForRetry()
@@ -105,11 +107,11 @@ object ContinuationResolver {
                     ContinuationContext.deactivate(ContinuationScope.RECOVERY)
                     "Okay, recovery cancelled."
                 }
-                else -> null  // not a recovery signal — fall through
+                else -> null
             }
         }
 
-        // ── Priority 3: Workflow continuation (ExecutionQueue PENDING items) ──
+        // ── Priority 3: Workflow continuation ─────────────────────────────────
         if (ContinuationContext.isActive(ContinuationScope.WORKFLOW)) {
             return when (signal) {
                 ContinuationType.CONTINUE, ContinuationType.NEXT, ContinuationType.RESUME -> {
@@ -133,17 +135,16 @@ object ContinuationResolver {
 
         // ── Priority 4: TaskRegistry (PAUSE/PREVIOUS — architecture only) ──
         if (signal == ContinuationType.PAUSE || signal == ContinuationType.PREVIOUS) {
-            // No execution logic yet. Reserved.
-            ZaraLogger.d("[Continuation] $signal received — no active task registry handler")
-            return null  // fall through to NLP
+            ZaraLogger.d("[Continuation] $signal — no active task registry handler")
+            return null
         }
 
         // ── Safety: signal matched but no active system ───────────────────────
         return when (signal) {
             ContinuationType.CONFIRM                              -> "Nothing is waiting for confirmation."
             ContinuationType.RETRY, ContinuationType.RESUME      -> "Nothing to retry or resume."
-            ContinuationType.CONTINUE, ContinuationType.NEXT     -> null  // treat as normal speech
-            ContinuationType.CANCEL, ContinuationType.REJECT     -> null  // handled upstream in VSM
+            ContinuationType.CONTINUE, ContinuationType.NEXT     -> null
+            ContinuationType.CANCEL, ContinuationType.REJECT     -> null
             else                                                  -> null
         }
     }
