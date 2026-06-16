@@ -44,6 +44,8 @@ import kotlinx.coroutines.*
  * Layer 6.5E: PipelineStateMachine + InteractionEventPublisher wired into all key transitions.
  *             StablePartialRenderer connected to SttManager partial callbacks.
  *             No execution logic changed. Events are fire-and-forget.
+ * Layer 6.5E cleanup: ExecutionStarted/Completed/Failed emitted ONLY from executeIntent().
+ *             Removed duplicate publishes from runWorkflow() step loop.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -134,11 +136,11 @@ class VoiceSessionManager(private val context: Context) {
 
         PipelineStateMachine.transition(PipelineState.PROCESSING)
 
-        // ── Layer 6.5C: Continuation resolver — FIRST ─────────────────────────
+        // ── Layer 6.5C: Continuation resolver — FIRST ──────────────────────────
         ContinuationResolver.resolve(corrected) { executeIntent(it) }
             ?.let { return it }
 
-        // ── Cancellation ─────────────────────────────────────────────────────
+        // ── Cancellation ────────────────────────────────────────────────────────
         val CANCEL_WORDS = setOf("cancel", "stop", "leave it", "never mind", "nevermind")
         if (CANCEL_WORDS.any { lower == it }) {
             ExecutionQueue.getWaiting()?.let { ExecutionQueue.markWaitingCancelled(it.plan.id) }
@@ -152,7 +154,7 @@ class VoiceSessionManager(private val context: Context) {
             return "Okay, cancelled."
         }
 
-        // ── Clarification check ───────────────────────────────────────────────
+        // ── Clarification check ─────────────────────────────────────────────────
         if (ClarificationManager.hasPending()) {
             PipelineStateMachine.transition(PipelineState.WAITING_CLARIFICATION)
             val resolvedIntent = ClarificationManager.resolve(corrected)
@@ -162,7 +164,7 @@ class VoiceSessionManager(private val context: Context) {
             if (ClarificationManager.hasPending()) return "I didn't catch that. Please say the name or number."
         }
 
-        // ── Normal pipeline ───────────────────────────────────────────────────
+        // ── Normal pipeline ─────────────────────────────────────────────────────
         val segments = CompoundIntentSplitter.split(corrected)
         if (segments.size == 1) return runPipeline(segments[0])
         return runWorkflow(segments)
@@ -225,13 +227,11 @@ class VoiceSessionManager(private val context: Context) {
                     responses.add(prompt)
                     break
                 }
-                PipelineStateMachine.transition(PipelineState.EXECUTING)
-                InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionStarted(plan.intent.action))
+                // ExecutionStarted/Completed published inside executeIntent() — single source of truth
                 val result = executeIntent(plan.intent)
                 ExecutionQueue.markCompleted(plan.id)
                 ExecutionIntelligenceTelemetry.track("wf_step_completed", plan.id)
                 InteractionEventPublisher.publish(ZaraInteractionEvent.WorkflowStepCompleted(stepIndex, result))
-                InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionCompleted(result))
                 PipelineStateMachine.transition(PipelineState.WORKFLOW_RUNNING)
                 responses.add(result)
                 stepIndex++
@@ -243,8 +243,8 @@ class VoiceSessionManager(private val context: Context) {
                 RecoveryManager.recordFailure(rec)
                 ContinuationContext.activate(ContinuationScope.RECOVERY)
                 PipelineStateMachine.transition(PipelineState.WAITING_RECOVERY)
+                // ExecutionFailed published inside executeIntent() — single source of truth
                 InteractionEventPublisher.publish(ZaraInteractionEvent.RecoveryRequired)
-                InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionFailed(e.message ?: "unknown"))
                 ExecutionIntelligenceTelemetry.track("wf_step_failed", plan.id, e.message)
                 responses.add("Couldn't complete one of those actions. Say 'retry' to try again.")
                 stepFailed = true
@@ -282,7 +282,6 @@ class VoiceSessionManager(private val context: Context) {
         val slotted    = SlotExtractor.extract(classified)
         val aliased    = PersonalContactResolver.resolve(slotted)
 
-        // Layer 6.5E: publish resolution start events based on intent slots
         if (aliased.extra.containsKey("recipient") || aliased.action == "CALL") {
             PipelineStateMachine.transition(PipelineState.RESOLVING_CONTACT)
             InteractionEventPublisher.publish(ZaraInteractionEvent.ContactResolutionStarted(aliased.target ?: ""))
@@ -291,15 +290,13 @@ class VoiceSessionManager(private val context: Context) {
             InteractionEventPublisher.publish(ZaraInteractionEvent.AppResolutionStarted(aliased.extra["app"] ?: aliased.target ?: ""))
         }
 
-        val resolved   = entityResolver.resolve(aliased)
+        val resolved = entityResolver.resolve(aliased)
 
-        // Publish resolution completed
         val phone = resolved.extra["phone_number"]
         val pkg   = resolved.extra["app_package"]
         if (phone != null) InteractionEventPublisher.publish(ZaraInteractionEvent.ContactResolutionCompleted(resolved.extra["contact_name"]))
         if (pkg   != null) InteractionEventPublisher.publish(ZaraInteractionEvent.AppResolutionCompleted(pkg))
 
-        // Publish clarification if needed
         if (resolved.extra["needs_clarification"] == "true") {
             val candidates = resolved.extra["entity_candidates"]?.split("|") ?: emptyList()
             PipelineStateMachine.transition(PipelineState.WAITING_CLARIFICATION)
