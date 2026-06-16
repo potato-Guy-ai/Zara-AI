@@ -11,12 +11,17 @@ import com.zara.assistant.core.ExecutionTelemetry
 import com.zara.assistant.core.IntentAction
 import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
+import com.zara.assistant.media.MediaControlAction
+import com.zara.assistant.media.MediaControlManager
 import com.zara.assistant.models.ClarificationCandidate
 import com.zara.assistant.models.ClarificationEntityType
 import com.zara.assistant.models.PendingClarification
 import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
+/**
+ * Layer 6.5F Phase 1: Added MEDIA_CONTROL case in executeRaw().
+ */
 class ActionExecutor(private val context: Context) {
 
     private val appActions   = AppActions(context)
@@ -207,6 +212,14 @@ class ActionExecutor(private val context: Context) {
                 val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
                 if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
                 else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+            }
+            // Layer 6.5F Phase 1: media transport control
+            IntentAction.MEDIA_CONTROL -> {
+                val actionName = intent.extra[IntentExtra.MEDIA_ACTION]
+                val mediaAction = actionName?.let {
+                    try { MediaControlAction.valueOf(it) } catch (e: IllegalArgumentException) { null }
+                } ?: return "Unknown media action."
+                MediaControlManager.execute(context, mediaAction)
             }
             IntentAction.SEARCH_QUERY -> {
                 val query = intent.extra[IntentExtra.QUERY] ?: intent.target ?: return "What would you like to search for?"
