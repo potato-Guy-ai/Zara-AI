@@ -2,7 +2,10 @@ name: Zara CI
 
 on:
   push:
-    branches: [main, develop]
+    branches:
+      -main
+      -develop
+      -layer6-5bdev
   pull_request:
     branches: [main]
 
