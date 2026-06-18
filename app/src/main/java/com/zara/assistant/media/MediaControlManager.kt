@@ -22,6 +22,7 @@ object MediaControlManager {
     fun execute(context: Context, action: MediaControlAction): String {
         ZaraLogger.d("[MediaControl] contextClass=${context.javaClass.name}")
         ZaraLogger.d("[MediaControl] package=${context.packageName}")
+        ZaraLogger.d("[MediaControl] Trying Level 1 (MediaSession)")
 
         // Level 1: MediaSession
         val session = MediaSessionLocator.findActiveSession(context)
@@ -46,14 +47,13 @@ object MediaControlManager {
                     ZaraLogger.d("[MediaControlManager] L1 $action on ${session.packageName}")
                     response
                 } catch (e: Exception) {
-                    ZaraLogger.e("[MediaControlManager] L1 failed: ${e.message} — falling back to L2")
+                    ZaraLogger.d("[MediaControl] Level 1 failed -> fallback to Level 2")
                     dispatchMediaKey(context, action)
                 }
             }
         }
 
-        // Level 2: AudioManager key dispatch
-        ZaraLogger.d("[MediaControlManager] L1 unavailable — falling back to L2")
+        ZaraLogger.d("[MediaControl] Level 1 failed -> fallback to Level 2")
         return dispatchMediaKey(context, action)
     }
 
@@ -67,6 +67,7 @@ object MediaControlManager {
         }
         val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         return try {
+            ZaraLogger.d("[MediaControl] Dispatching Level 2 key event: $action")
             audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keycode))
             audio.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keycode))
             val response = when (action) {
@@ -76,10 +77,10 @@ object MediaControlManager {
                 MediaControlAction.NEXT     -> "Next track."
                 MediaControlAction.PREVIOUS -> "Previous track."
             }
-            ZaraLogger.d("[MediaControlManager] L2 $action dispatched")
+            ZaraLogger.d("[MediaControl] Level 2 success")
             response
         } catch (e: Exception) {
-            ZaraLogger.e("[MediaControlManager] L2 failed: ${e.message}")
+            ZaraLogger.e("[MediaControl] Level 2 failed: ${e.message}")
             "Couldn't control media playback."
         }
     }
