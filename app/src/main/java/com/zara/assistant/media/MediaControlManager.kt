@@ -27,6 +27,9 @@ object MediaControlManager {
      * @return User-facing response string.
      */
     fun execute(context: Context, action: MediaControlAction): String {
+        ZaraLogger.d("[MediaControl] contextClass=${context.javaClass.name}")
+        ZaraLogger.d("[MediaControl] package=${context.packageName}")
+
         val session = MediaSessionLocator.findActiveSession(context)
             ?: return "No active media is playing."
 
