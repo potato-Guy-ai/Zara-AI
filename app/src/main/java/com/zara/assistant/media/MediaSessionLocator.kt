@@ -39,6 +39,8 @@ object MediaSessionLocator {
                 "com.zara.assistant.services.ZaraNotificationListener"
             )
 
+            ZaraLogger.d("[MediaSessionLocator] listener=${listenerComponent.flattenToString()}")
+
             val controllers = try {
                 msm.getActiveSessions(listenerComponent)
             } catch (se: SecurityException) {
