@@ -26,6 +26,16 @@ object PlaybackIntentParser {
     private val ALBUM_MARKERS    = listOf("album")
     private val ARTIST_MARKERS  = listOf("songs", "tracks", "music by")
 
+    // Layer 6.6A patch — recommendation-style queries must classify as
+    // RECOMMENDATION, not fall through to SONG/ARTIST. Checked before
+    // ARTIST_MARKERS since "sad songs" / "happy songs" contain "songs".
+    private val RECOMMENDATION_PATTERNS = listOf(
+        "relaxing music", "chill music", "sad songs", "happy songs",
+        "workout music", "focus music", "sleep music",
+        "something relaxing", "something chill",
+        "my taste", "based on my taste"
+    )
+
     private val APP_HINTS = mapOf(
         "spotify" to "spotify",
         "youtube music" to "youtube_music",
@@ -67,6 +77,7 @@ object PlaybackIntentParser {
     private fun detectType(text: String): PlaybackType {
         return when {
             LIKED_PATTERNS.any { text.contains(it) } -> PlaybackType.LIKED
+            RECOMMENDATION_PATTERNS.any { text.contains(it) } -> PlaybackType.RECOMMENDATION
             PLAYLIST_MARKERS.any { text.contains(it) } -> PlaybackType.PLAYLIST
             ALBUM_MARKERS.any { text.contains(it) } -> PlaybackType.ALBUM
             ARTIST_MARKERS.any { text.contains(it) } -> PlaybackType.ARTIST
