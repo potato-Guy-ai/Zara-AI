@@ -86,10 +86,8 @@ dependencies {
     implementation("com.google.code.gson:gson:2.10.1")
 
     // Spotify App Remote SDK (Layer 6.6 Phase 2C.2 infra — premium direct playback)
-    // VERSION UNVERIFIED: could not reach maven.spotify.com to confirm latest stable.
-    // Known historically published versions are in the 0.7.x range (e.g. 0.7.2).
-    // Verify against https://github.com/spotify/android-sdk releases before building.
-    implementation("com.spotify.android:app-remote:0.7.2")
+    // Distributed via JitPack, not Maven Central or maven.spotify.com.
+    implementation("com.github.spotify:android-app-remote-sdk:0.8.0-appremote_v2.1.0-auth")
 
     // ONNX Runtime (wake word model inference - optional, swap out later)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
