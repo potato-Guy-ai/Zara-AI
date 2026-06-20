@@ -16,11 +16,25 @@ import com.zara.assistant.media.MediaControlManager
 import com.zara.assistant.models.ClarificationCandidate
 import com.zara.assistant.models.ClarificationEntityType
 import com.zara.assistant.models.PendingClarification
+import com.zara.assistant.playback.FreePlaybackEngine
+import com.zara.assistant.playback.FreePlaybackResultType
+import com.zara.assistant.playback.PlaybackIntentParser
+import com.zara.assistant.playback.PlaybackOrchestrator
+import com.zara.assistant.playback.PlaybackResolver
+import com.zara.assistant.playback.PlaybackRoute
+import com.zara.assistant.playback.PremiumPlaybackEngine
+import com.zara.assistant.playback.SpotifyApiClientImpl
+import com.zara.assistant.playback.SpotifyPlaybackResultType
+import com.zara.assistant.playback.UserTierDetector
 import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
 /**
  * Layer 6.5F Phase 1: Added MEDIA_CONTROL case in executeRaw().
+ * Layer 6.6 wiring: PLAY_MUSIC now routes through the playback pipeline
+ * (PlaybackIntentParser -> PlaybackResolver -> PlaybackOrchestrator ->
+ * PremiumPlaybackEngine / FreePlaybackEngine), falling back to the
+ * legacy appActions.playMusic(...) path on any failure or FALLBACK_SEARCH route.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -170,6 +184,56 @@ class ActionExecutor(private val context: Context) {
         } catch (e: Exception) { ZaraLogger.e("executePlan: ${e.message}"); "Something went wrong." }
     }
 
+    /**
+     * Layer 6.6 wiring — PLAY_MUSIC pipeline entry point.
+     * Tries Playback pipeline; falls back to legacy appActions on any
+     * failure, FALLBACK_SEARCH route, or non-success engine result.
+     * AUTH_REQUIRED from PremiumPlaybackEngine is returned as-is (never
+     * falls back to legacy — that would silently bypass the auth prompt).
+     */
+    private suspend fun executePlayMusic(intent: ZaraIntent): String {
+        val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
+        val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
+        val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
+
+        fun legacyPlayMusic(): String =
+            if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
+            else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+
+        return try {
+            val playbackIntent = PlaybackIntentParser.parse(content ?: "")
+            val target = PlaybackResolver.resolve(playbackIntent)
+            val tier = UserTierDetector.detect()
+            val plan = PlaybackOrchestrator.orchestrate(target, tier)
+
+            if (plan == null) {
+                legacyPlayMusic()
+            } else when (plan.route) {
+                PlaybackRoute.PREMIUM_DIRECT -> {
+                    val client = SpotifyApiClientImpl(context)
+                    val result = PremiumPlaybackEngine(client).run(plan)
+                    when (result.type) {
+                        SpotifyPlaybackResultType.AUTH_REQUIRED -> result.message
+                        SpotifyPlaybackResultType.SUCCESS -> result.message
+                        else -> legacyPlayMusic()
+                    }
+                }
+                PlaybackRoute.FREE_ASSISTED -> {
+                    val result = FreePlaybackEngine.run(context, plan)
+                    when (result.type) {
+                        FreePlaybackResultType.SUCCESS,
+                        FreePlaybackResultType.FALLBACK_USED -> result.message
+                        else -> legacyPlayMusic()
+                    }
+                }
+                PlaybackRoute.FALLBACK_SEARCH -> legacyPlayMusic()
+            }
+        } catch (e: Exception) {
+            ZaraLogger.e("PLAY_MUSIC pipeline error: ${e.message}")
+            legacyPlayMusic()
+        }
+    }
+
     private suspend fun executeRaw(intent: ZaraIntent): String {
         return when (intent.action) {
             IntentAction.CALL -> {
@@ -206,13 +270,8 @@ class ActionExecutor(private val context: Context) {
             IntentAction.SHOW_ALARMS -> appActions.openAlarm()
             IntentAction.SHOW_TIMERS -> appActions.showTimers()
             IntentAction.OPEN_CLOCK  -> appActions.openAlarm()
-            IntentAction.PLAY_MUSIC  -> {
-                val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
-                val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
-                val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
-                if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
-                else appActions.playMusic(content, intent.extra[IntentExtra.APP])
-            }
+            // Layer 6.6 wiring: PLAY_MUSIC now routes through the playback pipeline.
+            IntentAction.PLAY_MUSIC  -> executePlayMusic(intent)
             // Layer 6.5F Phase 1: media transport control
             IntentAction.MEDIA_CONTROL -> {
                 val actionName = intent.extra[IntentExtra.MEDIA_ACTION]
