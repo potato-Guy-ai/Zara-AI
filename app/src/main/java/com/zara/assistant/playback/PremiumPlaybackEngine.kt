@@ -1,57 +1,61 @@
 package com.zara.assistant.playback
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
 /**
- * Layer 6.6B Phase 2C.1 — PremiumPlaybackEngine.
+ * Layer 6.6C.2 — PremiumPlaybackEngine.
  *
- * Architecture foundation for PREMIUM_DIRECT route. Uses a mocked
- * SpotifyApiClient — no network, no OAuth, no real playback.
+ * PREMIUM_DIRECT route execution. As of this layer, uses real
+ * SpotifyApiClientImpl by default instead of the mock — real PKCE auth,
+ * real Web API search, real App Remote playback.
  *
- * Phase 2C.2 plug-in point: construct this engine with a real
- * SpotifyApiClient implementation instead of MockSpotifyApiClient.
- * No other change required in this file's call sites.
+ * run() is now suspend + withContext(Dispatchers.IO) because the
+ * underlying client performs blocking network calls (OkHttp .execute(),
+ * App Remote connect via CountDownLatch). This mirrors ActionExecutor's
+ * existing suspend-based execution pattern elsewhere in the codebase —
+ * not a new/unnecessary coroutine usage, but the minimum needed to keep
+ * real network I/O off the caller's thread.
  *
- * No threads. No services. No polling. No timers. No coroutines.
+ * No threads spun up directly here. No services. No polling. No timers.
  */
 class PremiumPlaybackEngine(
-    private val client: SpotifyApiClient = MockSpotifyApiClient
+    private val client: SpotifyApiClient
 ) {
 
     /**
      * Runs the direct-playback flow for a PREMIUM_DIRECT plan.
      * Ignores any plan whose route is not PREMIUM_DIRECT.
      */
-    fun run(plan: PlaybackExecutionPlan): SpotifyPlaybackResult {
+    suspend fun run(plan: PlaybackExecutionPlan): SpotifyPlaybackResult = withContext(Dispatchers.IO) {
         if (plan.route != PlaybackRoute.PREMIUM_DIRECT) {
-            return SpotifyPlaybackResult(
+            return@withContext SpotifyPlaybackResult(
                 type = SpotifyPlaybackResultType.FAILED,
                 state = SpotifyPlaybackState.IDLE,
                 message = "Not a PREMIUM_DIRECT plan."
             )
         }
 
-        // Step 1: validate auth state before any search/playback attempt.
         val authState = client.getAuthState()
         if (authState != SpotifyAuthState.AUTHENTICATED) {
-            return SpotifyPlaybackResult(
+            return@withContext SpotifyPlaybackResult(
                 type = SpotifyPlaybackResultType.AUTH_REQUIRED,
                 state = SpotifyPlaybackState.AUTH_REQUIRED,
-                message = "Spotify authentication required."
+                message = "Please connect Spotify first."
             )
         }
 
-        // Step 2: search target based on execution type.
         val result = search(plan)
         if (result == null) {
-            return SpotifyPlaybackResult(
+            return@withContext SpotifyPlaybackResult(
                 type = SpotifyPlaybackResultType.FAILED,
                 state = SpotifyPlaybackState.FAILED,
-                message = "No match found for \"${plan.resolvedQuery}\"."
+                message = "Couldn\u2019t find that track."
             )
         }
 
-        // Step 3: trigger playback (mocked).
         val played = client.play(result.uri)
-        return if (played) {
+        if (played) {
             SpotifyPlaybackResult(
                 type = SpotifyPlaybackResultType.SUCCESS,
                 state = SpotifyPlaybackState.PLAYING,
@@ -72,7 +76,8 @@ class PremiumPlaybackEngine(
             PlaybackExecutionType.PLAY_SONG -> client.searchTrack(query)
             PlaybackExecutionType.PLAY_PLAYLIST -> client.searchPlaylist(query)
             PlaybackExecutionType.PLAY_RECOMMENDATION -> client.getRecommendations(query)
-            PlaybackExecutionType.PLAY_LIKED -> client.getRecommendations(query)
+            PlaybackExecutionType.PLAY_LIKED ->
+                (client as? SpotifyApiClientImpl)?.likedSongs() ?: client.getRecommendations(query)
             PlaybackExecutionType.SEARCH_ONLY -> null
         }
     }
