@@ -192,24 +192,32 @@ class ActionExecutor(private val context: Context) {
      * falls back to legacy — that would silently bypass the auth prompt).
      */
     private suspend fun executePlayMusic(intent: ZaraIntent): String {
+        ZaraLogger.d("[Playback] entered")
         val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
         val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
         val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
 
-        fun legacyPlayMusic(): String =
-            if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
+        fun legacyPlayMusic(): String {
+            ZaraLogger.d("[Playback] fallback triggered")
+            return if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
             else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+        }
 
         return try {
             val playbackIntent = PlaybackIntentParser.parse(content ?: "")
+            ZaraLogger.d("[Playback] parser=$playbackIntent")
             val target = PlaybackResolver.resolve(playbackIntent)
+            ZaraLogger.d("[Playback] target=$target")
             val tier = UserTierDetector.detect()
+            ZaraLogger.d("[Playback] tier=$tier")
             val plan = PlaybackOrchestrator.orchestrate(target, tier)
+            ZaraLogger.d("[Playback] route=${plan?.route}")
 
             if (plan == null) {
                 legacyPlayMusic()
             } else when (plan.route) {
                 PlaybackRoute.PREMIUM_DIRECT -> {
+                    ZaraLogger.d("[Playback] premium engine entered")
                     val client = SpotifyApiClientImpl(context)
                     val result = PremiumPlaybackEngine(client).run(plan)
                     when (result.type) {
@@ -219,6 +227,7 @@ class ActionExecutor(private val context: Context) {
                     }
                 }
                 PlaybackRoute.FREE_ASSISTED -> {
+                    ZaraLogger.d("[Playback] free engine entered")
                     val result = FreePlaybackEngine.run(context, plan)
                     when (result.type) {
                         FreePlaybackResultType.SUCCESS,
@@ -229,7 +238,7 @@ class ActionExecutor(private val context: Context) {
                 PlaybackRoute.FALLBACK_SEARCH -> legacyPlayMusic()
             }
         } catch (e: Exception) {
-            ZaraLogger.e("PLAY_MUSIC pipeline error: ${e.message}")
+            ZaraLogger.e("[Playback] exception=${e.message}")
             legacyPlayMusic()
         }
     }
