@@ -46,6 +46,7 @@ import kotlinx.coroutines.*
  *             No execution logic changed. Events are fire-and-forget.
  * Layer 6.5E cleanup: ExecutionStarted/Completed/Failed emitted ONLY from executeIntent().
  *             Removed duplicate publishes from runWorkflow() step loop.
+ * Layer 6.5G Phase 2: PartialStt published in both startListeningSession onPartial callbacks.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -80,7 +81,10 @@ class VoiceSessionManager(private val context: Context) {
         PipelineStateMachine.transition(PipelineState.LISTENING)
         StablePartialRenderer.reset()
         sttManager.startListening(
-            onPartial = { partial -> StablePartialRenderer.onPartial(partial) },
+            onPartial = { partial ->
+                StablePartialRenderer.onPartial(partial)
+                InteractionEventPublisher.publish(ZaraInteractionEvent.PartialStt(partial))
+            },
             onResult  = { rawText ->
                 InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStopped)
                 if (rawText.isBlank()) {
@@ -106,7 +110,10 @@ class VoiceSessionManager(private val context: Context) {
         PipelineStateMachine.transition(PipelineState.LISTENING)
         StablePartialRenderer.reset()
         sttManager.startListening(
-            onPartial = { partial -> StablePartialRenderer.onPartial(partial) },
+            onPartial = { partial ->
+                StablePartialRenderer.onPartial(partial)
+                InteractionEventPublisher.publish(ZaraInteractionEvent.PartialStt(partial))
+            },
             onResult  = { rawText ->
                 InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStopped)
                 if (rawText.isBlank()) {
