@@ -47,6 +47,7 @@ import kotlinx.coroutines.*
  * Layer 6.5E cleanup: ExecutionStarted/Completed/Failed emitted ONLY from executeIntent().
  *             Removed duplicate publishes from runWorkflow() step loop.
  * Layer 6.5G Phase 2: PartialStt published in both startListeningSession onPartial callbacks.
+ * Layer 6.5G Phase 2 fix: FinalStt published in both startListeningSession onResult callbacks.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -91,6 +92,9 @@ class VoiceSessionManager(private val context: Context) {
                     isListening = false; wakeWordManager.resume(); return@startListening
                 }
                 StablePartialRenderer.onFinal(rawText)
+                InteractionEventPublisher.publish(
+                    ZaraInteractionEvent.FinalStt(rawText)
+                )
                 scope.launch {
                     val response = processInput(rawText)
                     ttsManager.speak(response) { isListening = false; wakeWordManager.resume() }
@@ -120,6 +124,9 @@ class VoiceSessionManager(private val context: Context) {
                     isListening = false; wakeWordManager.resume(); onResponse(""); return@startListening
                 }
                 StablePartialRenderer.onFinal(rawText)
+                InteractionEventPublisher.publish(
+                    ZaraInteractionEvent.FinalStt(rawText)
+                )
                 scope.launch {
                     val response = processInput(rawText)
                     isListening = false; wakeWordManager.resume()
