@@ -48,6 +48,8 @@ import kotlinx.coroutines.*
  *             Removed duplicate publishes from runWorkflow() step loop.
  * Layer 6.5G Phase 2: PartialStt published in both startListeningSession onPartial callbacks.
  * Layer 6.5G Phase 2 fix: FinalStt published in both startListeningSession onResult callbacks.
+ * Layer 6.5G bugfix: manual mic path now speaks response via TTS (BUG 1).
+ *             processText() no longer publishes FinalStt — transcript UI is voice-only (BUG 3).
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -130,6 +132,8 @@ class VoiceSessionManager(private val context: Context) {
                 scope.launch {
                     val response = processInput(rawText)
                     isListening = false; wakeWordManager.resume()
+                    // BUG 1 fix: manual mic path must speak the reply, same as wakeword path.
+                    ttsManager.speak(response)
                     withContext(Dispatchers.Main) { onResponse(response) }
                 }
             }
@@ -138,7 +142,7 @@ class VoiceSessionManager(private val context: Context) {
 
     fun processText(text: String, onResponse: (String) -> Unit) {
         scope.launch {
-            InteractionEventPublisher.publish(ZaraInteractionEvent.FinalStt(text))
+            // BUG 3 fix: typed commands must never publish to the (voice-only) transcript UI.
             val response = processInput(text)
             withContext(Dispatchers.Main) { onResponse(response) }
         }
