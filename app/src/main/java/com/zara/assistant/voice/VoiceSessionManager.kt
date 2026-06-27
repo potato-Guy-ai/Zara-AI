@@ -54,6 +54,9 @@ import kotlinx.coroutines.*
  *             after TTS, conversational follow-ups reopen the mic without a new wakeword.
  *             Action commands, stop phrases ("stop"/"cancel"/"bye"/"thank you"), or a 15s
  *             silence timeout end the loop. Manual mic path is untouched — single-shot only.
+ * Layer 6.6 stability fix: hard guard against overlapping STT sessions (see
+ *             docs/change-log/layer6_6-stability-fix.md). sttSessionActive flag + defensive
+ *             sttManager.stop() before every startListening() call. No behavior change.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -70,6 +73,11 @@ class VoiceSessionManager(private val context: Context) {
     // to decide whether to reopen the mic after a wakeword turn.
     private var lastIntent: ZaraIntent? = null
 
+    // Layer 6.6 stability fix: true only while an STT session is actually open.
+    // Guarantees a new session can never be started while one is already active.
+    @Volatile
+    private var sttSessionActive = false
+
     private val CONVERSATION_STOP_PHRASES = setOf("stop", "cancel", "bye", "thank you")
 
     var isListening = false
@@ -79,7 +87,7 @@ class VoiceSessionManager(private val context: Context) {
 
     fun stop() {
         wakeWordManager.stop(); sttManager.stop(); ttsManager.stop()
-        isListening = false; scope.cancel()
+        isListening = false; sttSessionActive = false; scope.cancel()
         ConversationModeManager.deactivate()
         PipelineStateMachine.transition(PipelineState.COMPLETED)
     }
@@ -90,10 +98,24 @@ class VoiceSessionManager(private val context: Context) {
         ttsManager.speak("Yes?") { startListeningSession() }
     }
 
+    /**
+     * Layer 6.6 stability fix: single choke point that guarantees no two STT
+     * sessions are ever active at once. Returns false (and starts nothing) if
+     * a session is already open; callers must check before proceeding.
+     */
+    private fun beginSttSession(): Boolean {
+        if (sttSessionActive) return false
+        sttManager.stop() // defensive: guarantee any prior recognizer is fully closed first
+        sttSessionActive = true
+        return true
+    }
+
     private fun startListeningSession() {
+        if (!beginSttSession()) return
         // Layer 6.6: wakeword session — (re)enter the conversation window and (re)arm its timeout.
         ConversationModeManager.activate(scope) {
             // Timeout fired with no follow-up speech: end the loop, go back to wakeword-only.
+            sttSessionActive = false
             isListening = false
             wakeWordManager.resume()
         }
@@ -106,6 +128,10 @@ class VoiceSessionManager(private val context: Context) {
                 InteractionEventPublisher.publish(ZaraInteractionEvent.PartialStt(partial))
             },
             onResult  = { rawText ->
+                // SttManager.stop() already ran internally before this callback fired
+                // (see onResults/onError) — recognizer is destroyed. Mark closed now too
+                // so beginSttSession() never sees a stale "active" flag.
+                sttSessionActive = false
                 InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStopped)
                 ConversationModeManager.cancelTimeout()
                 if (rawText.isBlank()) {
@@ -129,6 +155,8 @@ class VoiceSessionManager(private val context: Context) {
                     ttsManager.speak(response) {
                         isListening = false
                         // Layer 6.6: only reopen the mic for conversational follow-ups.
+                        // beginSttSession() inside startListeningSession() guarantees this
+                        // reopen cannot overlap a still-active session.
                         if (ConversationModeManager.isActive && isConversational(lastIntent)) {
                             isListening = true
                             startListeningSession()
@@ -150,6 +178,7 @@ class VoiceSessionManager(private val context: Context) {
     }
 
     private fun startListeningSession(onResponse: (String) -> Unit) {
+        if (!beginSttSession()) { isListening = false; wakeWordManager.resume(); onResponse(""); return }
         InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStarted)
         PipelineStateMachine.transition(PipelineState.LISTENING)
         StablePartialRenderer.reset()
@@ -159,6 +188,7 @@ class VoiceSessionManager(private val context: Context) {
                 InteractionEventPublisher.publish(ZaraInteractionEvent.PartialStt(partial))
             },
             onResult  = { rawText ->
+                sttSessionActive = false
                 InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStopped)
                 if (rawText.isBlank()) {
                     isListening = false; wakeWordManager.resume(); onResponse(""); return@startListening
