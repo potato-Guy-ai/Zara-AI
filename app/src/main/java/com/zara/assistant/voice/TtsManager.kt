@@ -21,7 +21,7 @@ class TtsManager(private val context: Context) {
 
     private var tts: TextToSpeech? = null
     private var isReady = false
-    private val queue = mutableListOf<Pair<String, (() -> Unit)?>>()\
+    private val queue = mutableListOf<Pair<String, (() -> Unit)?>>()
 
     init {
         tts = TextToSpeech(context) { status ->
