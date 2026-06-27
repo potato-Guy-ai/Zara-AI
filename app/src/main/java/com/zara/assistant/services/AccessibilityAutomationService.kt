@@ -9,6 +9,15 @@ import com.zara.assistant.utils.ZaraLogger
  * Accessibility automation service.
  * Used for: screen lock, home, back, global actions.
  * Kept from original architecture.
+ *
+ * Layer 6.6D Batch 0.1 — service foundation for the future UI Automation
+ * Engine (Automation Request -> UiAutomationEngine -> Automation Session
+ * -> Automation Module -> AccessibilityAutomationService -> Android UI).
+ * This batch only adds event listening + forwarding. No node scanning, no
+ * UI tree inspection, no click automation, no state machine — those are
+ * later batches. UiAutomationEngine does not exist yet, so events are
+ * forwarded through a temporary listener hook that the engine will
+ * subscribe to once built.
  */
 class AccessibilityAutomationService : AccessibilityService() {
 
@@ -17,20 +26,56 @@ class AccessibilityAutomationService : AccessibilityService() {
             private set
     }
 
+    // Layer 6.6D Batch 0.1: temporary hook point. UiAutomationEngine will
+    // subscribe here once it exists — no engine logic lives in this service.
+    private var automationEventListener: ((AutomationEvent) -> Unit)? = null
+
+    fun setAutomationEventListener(listener: ((AutomationEvent) -> Unit)?) {
+        automationEventListener = listener
+    }
+
     override fun onServiceConnected() {
         instance = this
         serviceInfo = serviceInfo.apply {
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            // Layer 6.6D Batch 0.1: also listen for content changes, not just
+            // window state changes, so future automation can react to in-app UI updates.
+            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
         }
         ZaraLogger.d("AccessibilityService connected")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    /**
+     * Layer 6.6D Batch 0.1: converts the raw AccessibilityEvent into a
+     * lightweight AutomationEvent and forwards it to the listener hook.
+     * No node traversal, no rootInActiveWindow access, no automation logic —
+     * that belongs to UiAutomationEngine in a later batch.
+     */
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        val packageName = event.packageName?.toString()
+        if (packageName.isNullOrBlank()) return
+
+        val automationEvent = AutomationEvent(
+            eventType = event.eventType,
+            packageName = packageName,
+            className = event.className?.toString(),
+            timestamp = event.eventTime
+        )
+
+        ZaraLogger.d(
+            "[Automation] event=${AccessibilityEvent.eventTypeToString(automationEvent.eventType)} " +
+                "package=${automationEvent.packageName}"
+        )
+
+        automationEventListener?.invoke(automationEvent)
+    }
 
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        automationEventListener = null
         instance = null
         super.onDestroy()
     }
