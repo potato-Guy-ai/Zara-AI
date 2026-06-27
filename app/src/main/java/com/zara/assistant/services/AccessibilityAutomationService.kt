@@ -3,6 +3,7 @@ package com.zara.assistant.services
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.view.accessibility.AccessibilityEvent
+import com.zara.assistant.automation.core.UiAutomationEngine
 import com.zara.assistant.utils.ZaraLogger
 
 /**
@@ -18,6 +19,10 @@ import com.zara.assistant.utils.ZaraLogger
  * later batches. UiAutomationEngine does not exist yet, so events are
  * forwarded through a temporary listener hook that the engine will
  * subscribe to once built.
+ *
+ * Layer 6.6D Batch 0.2 — UiAutomationEngine now exists; it attaches to
+ * the listener hook itself via UiAutomationEngine.attach() once the
+ * service connects. This service still does no routing/automation logic.
  */
 class AccessibilityAutomationService : AccessibilityService() {
 
@@ -26,8 +31,8 @@ class AccessibilityAutomationService : AccessibilityService() {
             private set
     }
 
-    // Layer 6.6D Batch 0.1: temporary hook point. UiAutomationEngine will
-    // subscribe here once it exists — no engine logic lives in this service.
+    // Layer 6.6D Batch 0.1: temporary hook point. UiAutomationEngine
+    // subscribes here (Batch 0.2) — no engine logic lives in this service.
     private var automationEventListener: ((AutomationEvent) -> Unit)? = null
 
     fun setAutomationEventListener(listener: ((AutomationEvent) -> Unit)?) {
@@ -43,6 +48,8 @@ class AccessibilityAutomationService : AccessibilityService() {
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
         }
+        // Layer 6.6D Batch 0.2: engine subscribes to this service's event hook now that it exists.
+        UiAutomationEngine.attach()
         ZaraLogger.d("AccessibilityService connected")
     }
 
@@ -50,7 +57,7 @@ class AccessibilityAutomationService : AccessibilityService() {
      * Layer 6.6D Batch 0.1: converts the raw AccessibilityEvent into a
      * lightweight AutomationEvent and forwards it to the listener hook.
      * No node traversal, no rootInActiveWindow access, no automation logic —
-     * that belongs to UiAutomationEngine in a later batch.
+     * that belongs to UiAutomationEngine / Automation Module in later batches.
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
