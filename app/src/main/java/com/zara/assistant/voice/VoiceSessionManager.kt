@@ -50,6 +50,10 @@ import kotlinx.coroutines.*
  * Layer 6.5G Phase 2 fix: FinalStt published in both startListeningSession onResult callbacks.
  * Layer 6.5G bugfix: manual mic path now speaks response via TTS (BUG 1).
  *             processText() no longer publishes FinalStt — transcript UI is voice-only (BUG 3).
+ * Layer 6.6: Voice conversation loop. Wakeword sessions enter ConversationModeManager.ACTIVE;
+ *             after TTS, conversational follow-ups reopen the mic without a new wakeword.
+ *             Action commands, stop phrases ("stop"/"cancel"/"bye"/"thank you"), or a 15s
+ *             silence timeout end the loop. Manual mic path is untouched — single-shot only.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -62,6 +66,12 @@ class VoiceSessionManager(private val context: Context) {
     private val classifier      = LocalIntentClassifier()
     private val entityResolver  = EntityResolver(context)
 
+    // Layer 6.6: last intent actually executed, used by the conversation loop
+    // to decide whether to reopen the mic after a wakeword turn.
+    private var lastIntent: ZaraIntent? = null
+
+    private val CONVERSATION_STOP_PHRASES = setOf("stop", "cancel", "bye", "thank you")
+
     var isListening = false
         private set
 
@@ -70,6 +80,7 @@ class VoiceSessionManager(private val context: Context) {
     fun stop() {
         wakeWordManager.stop(); sttManager.stop(); ttsManager.stop()
         isListening = false; scope.cancel()
+        ConversationModeManager.deactivate()
         PipelineStateMachine.transition(PipelineState.COMPLETED)
     }
 
@@ -80,6 +91,12 @@ class VoiceSessionManager(private val context: Context) {
     }
 
     private fun startListeningSession() {
+        // Layer 6.6: wakeword session — (re)enter the conversation window and (re)arm its timeout.
+        ConversationModeManager.activate(scope) {
+            // Timeout fired with no follow-up speech: end the loop, go back to wakeword-only.
+            isListening = false
+            wakeWordManager.resume()
+        }
         InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStarted)
         PipelineStateMachine.transition(PipelineState.LISTENING)
         StablePartialRenderer.reset()
@@ -90,8 +107,18 @@ class VoiceSessionManager(private val context: Context) {
             },
             onResult  = { rawText ->
                 InteractionEventPublisher.publish(ZaraInteractionEvent.ListeningStopped)
+                ConversationModeManager.cancelTimeout()
                 if (rawText.isBlank()) {
                     isListening = false; wakeWordManager.resume(); return@startListening
+                }
+                val normalized = rawText.trim().lowercase()
+                if (ConversationModeManager.isActive && normalized in CONVERSATION_STOP_PHRASES) {
+                    // Layer 6.6: explicit stop phrase — end the loop, no reopen.
+                    StablePartialRenderer.onFinal(rawText)
+                    ConversationModeManager.deactivate()
+                    isListening = false
+                    ttsManager.speak("Okay.") { wakeWordManager.resume() }
+                    return@startListening
                 }
                 StablePartialRenderer.onFinal(rawText)
                 InteractionEventPublisher.publish(
@@ -99,13 +126,24 @@ class VoiceSessionManager(private val context: Context) {
                 )
                 scope.launch {
                     val response = processInput(rawText)
-                    ttsManager.speak(response) { isListening = false; wakeWordManager.resume() }
+                    ttsManager.speak(response) {
+                        isListening = false
+                        // Layer 6.6: only reopen the mic for conversational follow-ups.
+                        if (ConversationModeManager.isActive && isConversational(lastIntent)) {
+                            isListening = true
+                            startListeningSession()
+                        } else {
+                            ConversationModeManager.deactivate()
+                            wakeWordManager.resume()
+                        }
+                    }
                 }
             }
         )
     }
 
     fun startManualListening(onResponse: (String) -> Unit) {
+        // Layer 6.6: manual mic tap is always single-shot — never enters conversation mode.
         if (isListening) return
         isListening = true; wakeWordManager.pause()
         startListeningSession(onResponse)
@@ -167,6 +205,7 @@ class VoiceSessionManager(private val context: Context) {
             ClarificationManager.clear()
             RecoveryManager.clear()
             ContinuationContext.clearAll()
+            lastIntent = null
             ExecutionIntelligenceTelemetry.track("cancel_all")
             PipelineStateMachine.transition(PipelineState.COMPLETED)
             return "Okay, cancelled."
@@ -326,6 +365,9 @@ class VoiceSessionManager(private val context: Context) {
     }
 
     private suspend fun executeIntent(intent: ZaraIntent): String {
+        // Layer 6.6: record the executed intent so the conversation loop can decide
+        // afterwards whether this was a conversational query or an action command.
+        lastIntent = intent
         PipelineStateMachine.transition(PipelineState.EXECUTING)
         InteractionEventPublisher.publish(ZaraInteractionEvent.ExecutionStarted(intent.action))
         return try {
