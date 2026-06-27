@@ -31,7 +31,7 @@ Examples:
 * ig → Instagram
 * yt → YouTube
 * ff → Free Fire
-* ff max → Free Fire Max
+* ff max → Free Fire Max.
 
 ---
 
