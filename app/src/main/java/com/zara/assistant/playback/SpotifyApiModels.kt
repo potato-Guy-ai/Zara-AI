@@ -72,3 +72,10 @@ data class SpotifySavedTracksResponse(
 data class SpotifySavedTrackItem(
     @SerializedName("track") val track: SpotifyTrack?
 )
+
+// --- Current user's profile (https://api.spotify.com/v1/me) ---
+// Layer 6.6 fix: used by UserTierDetector to distinguish FREE vs PREMIUM.
+// `product` is Spotify's documented field: "premium", "free", or "open".
+data class SpotifyUserProfileResponse(
+    @SerializedName("product") val product: String?
+)
