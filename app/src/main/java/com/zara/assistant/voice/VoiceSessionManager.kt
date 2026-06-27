@@ -57,6 +57,8 @@ import kotlinx.coroutines.*
  * Layer 6.6 stability fix: hard guard against overlapping STT sessions (see
  *             docs/change-log/layer6_6-stability-fix.md). sttSessionActive flag + defensive
  *             sttManager.stop() before every startListening() call. No behavior change.
+ * Layer 6.6 logging: ConvLoop diagnostic logs added to TTS callback, startListeningSession,
+ *             and beginSttSession. Logging only — no logic changes.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -104,13 +106,22 @@ class VoiceSessionManager(private val context: Context) {
      * a session is already open; callers must check before proceeding.
      */
     private fun beginSttSession(): Boolean {
-        if (sttSessionActive) return false
+        // [ConvLoop] logging — Layer 6.6
+        ZaraLogger.d("[ConvLoop] beginSttSession entered")
+        ZaraLogger.d("[ConvLoop] sttSessionActive=$sttSessionActive")
+        if (sttSessionActive) {
+            ZaraLogger.d("[ConvLoop] beginSttSession blocked")
+            return false
+        }
         sttManager.stop() // defensive: guarantee any prior recognizer is fully closed first
         sttSessionActive = true
+        ZaraLogger.d("[ConvLoop] beginSttSession success")
         return true
     }
 
     private fun startListeningSession() {
+        // [ConvLoop] logging — Layer 6.6
+        ZaraLogger.d("[ConvLoop] startListeningSession entered")
         if (!beginSttSession()) return
         // Layer 6.6: wakeword session — (re)enter the conversation window and (re)arm its timeout.
         ConversationModeManager.activate(scope) {
@@ -153,14 +164,20 @@ class VoiceSessionManager(private val context: Context) {
                 scope.launch {
                     val response = processInput(rawText)
                     ttsManager.speak(response) {
+                        // [ConvLoop] logging — Layer 6.6
+                        ZaraLogger.d("[ConvLoop] isActive=${ConversationModeManager.isActive}")
+                        ZaraLogger.d("[ConvLoop] lastIntent=${lastIntent?.action}")
+                        ZaraLogger.d("[ConvLoop] conversational=${isConversational(lastIntent)}")
                         isListening = false
                         // Layer 6.6: only reopen the mic for conversational follow-ups.
                         // beginSttSession() inside startListeningSession() guarantees this
                         // reopen cannot overlap a still-active session.
                         if (ConversationModeManager.isActive && isConversational(lastIntent)) {
+                            ZaraLogger.d("[ConvLoop] REOPEN_MIC")
                             isListening = true
                             startListeningSession()
                         } else {
+                            ZaraLogger.d("[ConvLoop] EXIT_LOOP")
                             ConversationModeManager.deactivate()
                             wakeWordManager.resume()
                         }
