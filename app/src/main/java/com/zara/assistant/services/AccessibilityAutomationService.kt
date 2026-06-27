@@ -3,6 +3,7 @@ package com.zara.assistant.services
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import com.zara.assistant.automation.core.UiAutomationEngine
 import com.zara.assistant.utils.ZaraLogger
 
@@ -23,6 +24,10 @@ import com.zara.assistant.utils.ZaraLogger
  * Layer 6.6D Batch 0.2 — UiAutomationEngine now exists; it attaches to
  * the listener hook itself via UiAutomationEngine.attach() once the
  * service connects. This service still does no routing/automation logic.
+ *
+ * Layer 6.6D Batch 0.3 — service exposes the root node (getRootNode())
+ * for NodeScanner to traverse. The service itself does NOT scan — it
+ * only hands out the (possibly null) root, same as rootInActiveWindow.
  */
 class AccessibilityAutomationService : AccessibilityService() {
 
@@ -38,6 +43,12 @@ class AccessibilityAutomationService : AccessibilityService() {
     fun setAutomationEventListener(listener: ((AutomationEvent) -> Unit)?) {
         automationEventListener = listener
     }
+
+    /**
+     * Layer 6.6D Batch 0.3: null-safe exposure of the active window's root
+     * node. No scanning/traversal here — that's NodeScanner's job.
+     */
+    fun getRootNode(): AccessibilityNodeInfo? = rootInActiveWindow
 
     override fun onServiceConnected() {
         instance = this
