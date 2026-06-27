@@ -56,7 +56,14 @@ object NodeScanner {
             if (depth >= maxDepth) continue
 
             val childCount = node.childCount
-            for (i in 0 until childCount) {
+            // Batch 0.3A patch: push children in REVERSE index order so that,
+            // with a LIFO stack, child index 0 is popped (visited) first —
+            // matching natural visual/DFS order. Pushing 0..childCount-1
+            // ascending (the previous behavior) caused the stack to pop
+            // child(childCount-1) first, reversing visit order. This matters
+            // for "top result" semantics (e.g. Spotify/YouTube autoplay
+            // picking the first visible match).
+            for (i in childCount - 1 downTo 0) {
                 if (results.size >= maxNodes) break
                 val child = node.getChild(i) ?: continue
                 stack.addLast(child to depth + 1)
