@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.StateFlow
  * Subscribes to InteractionEventPublisher.
  * Updates transcript on PartialStt and FinalStt.
  * Clears on ListeningStarted.
+ * Clears on ExecutionCompleted/ExecutionFailed (BUG 2 fix — transcript must
+ * clear once the command's response has been delivered).
  * No polling, no timers, no threads.
  */
 object StreamingTranscriptManager {
@@ -20,10 +22,12 @@ object StreamingTranscriptManager {
 
     private val observer: (ZaraInteractionEvent) -> Unit = { event ->
         when (event) {
-            is ZaraInteractionEvent.ListeningStarted -> _transcript.value = ""
-            is ZaraInteractionEvent.PartialStt       -> _transcript.value = event.text
-            is ZaraInteractionEvent.FinalStt         -> _transcript.value = event.text
-            else                                     -> Unit
+            is ZaraInteractionEvent.ListeningStarted   -> _transcript.value = ""
+            is ZaraInteractionEvent.PartialStt         -> _transcript.value = event.text
+            is ZaraInteractionEvent.FinalStt           -> _transcript.value = event.text
+            is ZaraInteractionEvent.ExecutionCompleted -> _transcript.value = ""
+            is ZaraInteractionEvent.ExecutionFailed    -> _transcript.value = ""
+            else                                       -> Unit
         }
     }
 
