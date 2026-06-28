@@ -21,6 +21,14 @@ import com.zara.assistant.utils.ZaraLogger
  *   "pause music"  → MEDIA_CONTROL
  *   "stop music"   → MEDIA_CONTROL
  *   "stop"         → cancellation block (unchanged)
+ *
+ * Layer 6.6 confirmation-loop fix: the CONFIRM branch now stamps the
+ * popped intent with extra["confirmation_approved"] = "true" before
+ * calling onExecute(). ZaraIntent.extra is an immutable Map<String,String>,
+ * so this is applied via .copy() (intent.extra[...] = ... does not compile
+ * against a read-only Map) rather than in-place mutation. ActionExecutor's
+ * confirmation gate now checks this marker instead of hasPending() (which
+ * pop() had already cleared, causing the gate to re-trigger on re-entry).
  */
 object ContinuationResolver {
 
@@ -68,7 +76,14 @@ object ContinuationResolver {
                         ExecutionQueue.markWaitingCompleted(request.planId)
                         ContinuationContext.deactivate(ContinuationScope.CONFIRMATION)
                         ZaraLogger.d("[Continuation] CONFIRM → ${request.plan.intent.action}")
-                        onExecute(request.plan.intent)
+                        // Layer 6.6 confirmation-loop fix: stamp approval marker
+                        // (via copy — extra is an immutable Map) BEFORE onExecute,
+                        // so the re-entrant ActionExecutor.execute() call below
+                        // skips the confirmation gate instead of re-triggering it.
+                        val approvedIntent = request.plan.intent.copy(
+                            extra = request.plan.intent.extra + ("confirmation_approved" to "true")
+                        )
+                        onExecute(approvedIntent)
                     } else "Nothing is waiting for confirmation."
                 }
                 ContinuationType.REJECT, ContinuationType.CANCEL -> {
