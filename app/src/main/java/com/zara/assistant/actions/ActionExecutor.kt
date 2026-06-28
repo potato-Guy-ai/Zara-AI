@@ -53,6 +53,16 @@ import java.util.UUID
  * the intent (via .copy(), since extra is an immutable Map) right before
  * calling onExecute() on the CONFIRM path. hasPending() is no longer part
  * of this condition.
+ *
+ * Layer 6.6 confirmation-overwrite fix (Option A, locked): if a second
+ * confirmation-requiring command arrives on this (single-command) path
+ * while one confirmation is already pending, it is rejected with a
+ * "answer the pending confirmation first" message instead of silently
+ * overwriting ConfirmationManager.store()'s pending request. No queue,
+ * no replacement — only one pending confirmation allowed via this path.
+ * NOTE: VoiceSessionManager.runWorkflow() has its own separate
+ * ConfirmationManager.store() call for workflow steps requiring
+ * confirmation; that call site is not guarded by this check.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -70,6 +80,15 @@ class ActionExecutor(private val context: Context) {
         // marker, not ConfirmationManager.hasPending() (which pop() already
         // cleared by the time the approved intent re-enters here).
         if (ConfirmationManager.requiresConfirmation(intent.action) && intent.extra["confirmation_approved"] != "true") {
+
+            // Layer 6.6 confirmation-overwrite fix (Option A): reject a second
+            // confirmation-requiring request outright instead of letting
+            // store() silently overwrite the first one below.
+            if (ConfirmationManager.hasPending()) {
+                ZaraLogger.d("[Confirmation] rejected new request for ${intent.action} — one already pending")
+                return "Please answer the pending confirmation first. Say yes or no."
+            }
+
             val plan = ExecutionPlan(
                 id           = UUID.randomUUID().toString(),
                 intent       = intent,
