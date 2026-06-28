@@ -100,16 +100,6 @@
             </intent-filter>
         </activity>
 
-        <!-- TEMP DEBUG HARNESS — REMOVE AFTER SPOTIFY STABILIZATION
-             Manual on-device validation for the Phase 0 UI Automation
-             foundation. Not exported; launched only from within the app
-             (MainActivity debug button). Delete this <activity> block +
-             ui/debug/DebugHarnessActivity.kt + the launcher button to
-             fully remove this harness. -->
-        <activity
-            android:name=".ui.debug.DebugHarnessActivity"
-            android:exported="false" />
-
         <service
             android:name=".services.ZaraForegroundService"
             android:exported="false"
