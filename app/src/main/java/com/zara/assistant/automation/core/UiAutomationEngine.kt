@@ -1,5 +1,6 @@
 package com.zara.assistant.automation.core
 
+import com.zara.assistant.automation.workflow.WorkflowExecutor
 import com.zara.assistant.services.AccessibilityAutomationService
 import com.zara.assistant.services.AutomationEvent
 import com.zara.assistant.utils.ZaraLogger
@@ -18,6 +19,10 @@ import com.zara.assistant.utils.ZaraLogger
  *
  * Single-session policy (mandatory): only one AutomationSession may be
  * active at a time. start() cancels any existing session first.
+ *
+ * Layer 6.6D Batch 0.5A — handleEvent() now also forwards each event to
+ * WorkflowExecutor.onEvent(), so a running workflow's WAIT_FOR_PACKAGE
+ * step can actually be satisfied. Routing only — no other change.
  */
 object UiAutomationEngine {
 
@@ -74,12 +79,16 @@ object UiAutomationEngine {
      * Routes a forwarded AutomationEvent into the active session, if any.
      * Pure routing only — no interpretation, no matching, no automation
      * behavior. That belongs to the Automation Module (later batch).
+     *
+     * Batch 0.5A: also forwards the event to WorkflowExecutor.onEvent()
+     * so its WAIT_FOR_PACKAGE step can be satisfied. Still pure routing —
+     * no logic about the event lives here.
      */
     fun handleEvent(event: AutomationEvent) {
         val session = activeSession
         if (session == null || session.state != SessionState.ACTIVE) return
         ZaraLogger.d("[AutomationEngine] event routed sessionId=${session.sessionId} package=${event.packageName}")
-        // Routing only — no further action taken in this batch.
+        WorkflowExecutor.onEvent(event)
     }
 
     /** Read-only access to the current session, if any. */
