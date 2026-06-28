@@ -1,5 +1,6 @@
 package com.zara.assistant.automation.workflow
 
+import android.os.Looper
 import android.view.accessibility.AccessibilityNodeInfo
 import com.zara.assistant.automation.actions.NodeActionExecutor
 import com.zara.assistant.automation.actions.NodeActionStatus
@@ -20,6 +21,13 @@ import java.util.concurrent.TimeUnit
  * logic, no retries, no branching, no loops, no recovery — a single
  * deterministic pass through each step, failing immediately on the
  * first failure.
+ *
+ * IMPORTANT (Batch 0.5A): start() performs blocking waits
+ * (WAIT_FOR_PACKAGE uses CountDownLatch.await(5000ms)). It must NEVER be
+ * called on the main/UI thread — doing so will freeze the UI and risks
+ * an ANR. Always call start() from a background/worker thread (e.g. a
+ * dedicated Thread, an Executor, or Dispatchers.IO if called from a
+ * coroutine). start() enforces this with a runtime guard below.
  */
 object WorkflowExecutor {
 
@@ -35,6 +43,13 @@ object WorkflowExecutor {
     private var waitTargetPackage: String? = null
 
     fun start(workflow: AutomationWorkflow): WorkflowResult {
+        // Batch 0.5A: main-thread guard. start() blocks (up to 5s per
+        // WAIT_FOR_PACKAGE step) and must never run on the main/UI thread.
+        if (Looper.getMainLooper().thread == Thread.currentThread()) {
+            ZaraLogger.e("[Workflow] start() called on main thread — refusing (ANR risk)")
+            return WorkflowResult(WorkflowStatus.FAILED_STEP, "WorkflowExecutor.start() cannot run on main thread")
+        }
+
         currentWorkflow = workflow
         currentStepIndex = 0
         scannedNodes = emptyList()
