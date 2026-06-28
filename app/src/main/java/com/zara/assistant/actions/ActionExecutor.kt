@@ -3,6 +3,8 @@ package com.zara.assistant.actions
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import com.zara.assistant.continuation.ContinuationContext
+import com.zara.assistant.continuation.ContinuationScope
 import com.zara.assistant.core.AppActionPlanner
 import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.ExecutionContract
@@ -11,6 +13,10 @@ import com.zara.assistant.core.ExecutionTelemetry
 import com.zara.assistant.core.IntentAction
 import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
+import com.zara.assistant.execution.ConfirmationManager
+import com.zara.assistant.execution.ConfirmationRequest
+import com.zara.assistant.execution.ExecutionPlan
+import com.zara.assistant.execution.ExecutionRequirement
 import com.zara.assistant.media.MediaControlAction
 import com.zara.assistant.media.MediaControlManager
 import com.zara.assistant.models.ClarificationCandidate
@@ -35,6 +41,10 @@ import java.util.UUID
  * (PlaybackIntentParser -> PlaybackResolver -> PlaybackOrchestrator ->
  * PremiumPlaybackEngine / FreePlaybackEngine), falling back to the
  * legacy appActions.playMusic(...) path on any failure or FALLBACK_SEARCH route.
+ * Layer 6.6 confirmation gate: single-command path now goes through the same
+ * ConfirmationManager flow as the workflow path for SEND_WHATSAPP, SEND_SMS, CALL.
+ * ContinuationResolver.resolve() → pop() → onExecute() arrives here with
+ * hasPending()==false, so the gate is never re-entered after approval.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -44,8 +54,26 @@ class ActionExecutor(private val context: Context) {
 
     suspend fun execute(intent: ZaraIntent): String {
         ZaraLogger.d("Executing: ${intent.action} target=${intent.target}")
-        if (intent.extra["unsupported_command"] == "true") return "Sorry, that command isn\'t supported."
+        if (intent.extra["unsupported_command"] == "true") return "Sorry, that command isn't supported."
         if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") return handleClarificationNeeded(intent)
+
+        // ── Confirmation gate (single-command path) ───────────────────────────
+        // Only fires when ConfirmationManager has no pending request.
+        // When ContinuationResolver calls onExecute() after "yes", pop() has
+        // already cleared pending, so hasPending()==false and gate is skipped.
+        if (ConfirmationManager.requiresConfirmation(intent.action) && !ConfirmationManager.hasPending()) {
+            val plan = ExecutionPlan(
+                id           = UUID.randomUUID().toString(),
+                intent       = intent,
+                requirements = setOf(ExecutionRequirement.CONFIRMATION_REQUIRED)
+            )
+            val prompt = buildConfirmationPrompt(intent)
+            ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))
+            ContinuationContext.activate(ContinuationScope.CONFIRMATION)
+            ZaraLogger.d("[Confirmation] gate stored for ${intent.action} planId=${plan.id}")
+            return prompt
+        }
+        // ── End confirmation gate ─────────────────────────────────────────────
 
         val contract: ExecutionContract? = ExecutionGuard.readContract(intent)
         if (contract != null) {
@@ -74,6 +102,17 @@ class ActionExecutor(private val context: Context) {
         } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
     }
 
+    private fun buildConfirmationPrompt(intent: ZaraIntent): String {
+        val contact = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
+        val body    = intent.extra[IntentExtra.BODY]
+        return when (intent.action) {
+            IntentAction.SEND_WHATSAPP -> if (!body.isNullOrBlank()) "Message to $contact ready: \"$body\". Send?" else "Send WhatsApp to $contact?"
+            IntentAction.SEND_SMS      -> if (!body.isNullOrBlank()) "SMS to $contact ready: \"$body\". Send?" else "Send SMS to $contact?"
+            IntentAction.CALL          -> "Call $contact now?"
+            else                       -> "Confirm action for $contact?"
+        }
+    }
+
     private fun executeResolvedCall(intent: ZaraIntent): String? {
         val phone = intent.extra[IntentExtra.PHONE_NUMBER] ?: return null
         val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
@@ -89,7 +128,7 @@ class ActionExecutor(private val context: Context) {
             val uri = Uri.parse("https://wa.me/$cleaned?text=${Uri.encode(body)}")
             context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Opening WhatsApp to message $name."
-        } catch (e: Exception) { "Couldn\'t open WhatsApp." }
+        } catch (e: Exception) { "Couldn't open WhatsApp." }
     }
 
     private suspend fun executeResolvedSms(intent: ZaraIntent): String? {
@@ -103,7 +142,7 @@ class ActionExecutor(private val context: Context) {
             }
             context.startActivity(smsIntent)
             "Opening SMS to $name."
-        } catch (e: Exception) { "Couldn\'t open SMS app." }
+        } catch (e: Exception) { "Couldn't open SMS app." }
     }
 
     private fun handleAmbiguous(sentinel: String, intent: ZaraIntent): String {
@@ -114,7 +153,7 @@ class ActionExecutor(private val context: Context) {
             candidates.add(ClarificationCandidate(displayName = parts[i], resolvedValue = parts[i + 1]))
             i += 2
         }
-        if (candidates.isEmpty()) return "I found multiple contacts but couldn\'t list them."
+        if (candidates.isEmpty()) return "I found multiple contacts but couldn't list them."
         if (!ClarificationManager.hasPending()) {
             ClarificationManager.store(
                 PendingClarification(
@@ -153,7 +192,7 @@ class ActionExecutor(private val context: Context) {
                            else appActions.playMusic(contract.query ?: contract.target, appName)
                 else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp(contract.app)
             }
-        } catch (e: Exception) { ZaraLogger.e("executeContract: ${e.message}"); "Couldn\'t complete \'${contract.action}\' on ${contract.app}." }
+        } catch (e: Exception) { ZaraLogger.e("executeContract: ${e.message}"); "Couldn't complete '${contract.action}' on ${contract.app}." }
     }
 
     private suspend fun executePlan(intent: ZaraIntent, app: String): String {
@@ -304,7 +343,7 @@ class ActionExecutor(private val context: Context) {
             IntentAction.SET_VOLUME     -> mediaActions.adjustVolume(intent.extra[IntentExtra.DIRECTION] ?: "up")
             IntentAction.SET_SILENT     -> mediaActions.setSilentMode(intent.extra[IntentExtra.ON] == "true", intent.extra[IntentExtra.MODE] ?: "silent")
             IntentAction.LOCK_SCREEN    -> mediaActions.lockScreen()
-            else -> "I don\'t know how to do \'${intent.action}\' yet."
+            else -> "I don't know how to do '${intent.action}' yet."
         }
     }
 
@@ -316,7 +355,7 @@ class ActionExecutor(private val context: Context) {
 
     private fun handleClarificationNeeded(intent: ZaraIntent): String {
         val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]?.split("|")?.filter { it.isNotBlank() } ?: emptyList()
-        if (rawCandidates.isEmpty()) return "I\'m not sure who or what you mean."
+        if (rawCandidates.isEmpty()) return "I'm not sure who or what you mean."
         if (!ClarificationManager.hasPending()) {
             val entityType = when (intent.action) {
                 IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT
