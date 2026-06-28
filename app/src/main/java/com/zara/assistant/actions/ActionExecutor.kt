@@ -54,15 +54,13 @@ import java.util.UUID
  * calling onExecute() on the CONFIRM path. hasPending() is no longer part
  * of this condition.
  *
- * Layer 6.6 confirmation-overwrite fix (Option A, locked): if a second
- * confirmation-requiring command arrives on this (single-command) path
- * while one confirmation is already pending, it is rejected with a
- * "answer the pending confirmation first" message instead of silently
- * overwriting ConfirmationManager.store()'s pending request. No queue,
- * no replacement — only one pending confirmation allowed via this path.
- * NOTE: VoiceSessionManager.runWorkflow() has its own separate
- * ConfirmationManager.store() call for workflow steps requiring
- * confirmation; that call site is not guarded by this check.
+ * Confirmation debt cleanup: the separate caller-side hasPending() check
+ * (former "Option A" overwrite guard) has been removed. ConfirmationManager
+ * .store() now atomically enforces the "only one pending confirmation
+ * globally" invariant itself and returns false if a confirmation is
+ * already pending. This call site, and VoiceSessionManager.runWorkflow()'s
+ * call site, both now gate on store()'s return value instead of duplicating
+ * the hasPending() check beforehand.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -81,21 +79,19 @@ class ActionExecutor(private val context: Context) {
         // cleared by the time the approved intent re-enters here).
         if (ConfirmationManager.requiresConfirmation(intent.action) && intent.extra["confirmation_approved"] != "true") {
 
-            // Layer 6.6 confirmation-overwrite fix (Option A): reject a second
-            // confirmation-requiring request outright instead of letting
-            // store() silently overwrite the first one below.
-            if (ConfirmationManager.hasPending()) {
-                ZaraLogger.d("[Confirmation] rejected new request for ${intent.action} — one already pending")
-                return "Please answer the pending confirmation first. Say yes or no."
-            }
-
             val plan = ExecutionPlan(
                 id           = UUID.randomUUID().toString(),
                 intent       = intent,
                 requirements = setOf(ExecutionRequirement.CONFIRMATION_REQUIRED)
             )
             val prompt = buildConfirmationPrompt(intent)
-            ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))
+
+            // Confirmation debt cleanup: store() itself now enforces the
+            // single-pending invariant atomically and returns false instead
+            // of overwriting an existing pending confirmation.
+            if (!ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))) {
+                return "Please answer the pending confirmation first. Say yes or no."
+            }
             ContinuationContext.activate(ContinuationScope.CONFIRMATION)
             ZaraLogger.d("[Confirmation] gate stored for ${intent.action} planId=${plan.id}")
             return prompt
