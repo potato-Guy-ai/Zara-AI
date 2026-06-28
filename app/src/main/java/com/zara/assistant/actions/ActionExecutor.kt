@@ -43,8 +43,16 @@ import java.util.UUID
  * legacy appActions.playMusic(...) path on any failure or FALLBACK_SEARCH route.
  * Layer 6.6 confirmation gate: single-command path now goes through the same
  * ConfirmationManager flow as the workflow path for SEND_WHATSAPP, SEND_SMS, CALL.
- * ContinuationResolver.resolve() → pop() → onExecute() arrives here with
- * hasPending()==false, so the gate is never re-entered after approval.
+ *
+ * Layer 6.6 confirmation-loop fix: the gate previously re-triggered on the
+ * "yes" re-entry path, because ConfirmationManager.pop() clears `pending`
+ * BEFORE onExecute() re-enters this function — so !hasPending() was true
+ * again on re-entry and the gate fired a second time, looping forever.
+ * Fix: gate now checks an explicit per-intent approval marker
+ * (extra["confirmation_approved"]) that ContinuationResolver stamps onto
+ * the intent (via .copy(), since extra is an immutable Map) right before
+ * calling onExecute() on the CONFIRM path. hasPending() is no longer part
+ * of this condition.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -58,10 +66,10 @@ class ActionExecutor(private val context: Context) {
         if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") return handleClarificationNeeded(intent)
 
         // ── Confirmation gate (single-command path) ───────────────────────────
-        // Only fires when ConfirmationManager has no pending request.
-        // When ContinuationResolver calls onExecute() after "yes", pop() has
-        // already cleared pending, so hasPending()==false and gate is skipped.
-        if (ConfirmationManager.requiresConfirmation(intent.action) && !ConfirmationManager.hasPending()) {
+        // Layer 6.6 confirmation-loop fix: gated on the per-intent approval
+        // marker, not ConfirmationManager.hasPending() (which pop() already
+        // cleared by the time the approved intent re-enters here).
+        if (ConfirmationManager.requiresConfirmation(intent.action) && intent.extra["confirmation_approved"] != "true") {
             val plan = ExecutionPlan(
                 id           = UUID.randomUUID().toString(),
                 intent       = intent,
