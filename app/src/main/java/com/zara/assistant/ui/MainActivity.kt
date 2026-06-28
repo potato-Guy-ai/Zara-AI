@@ -27,7 +27,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.services.ZaraForegroundService
-import com.zara.assistant.ui.debug.DebugHarnessActivity
 import com.zara.assistant.ui.theme.ZaraTheme
 
 class MainActivity : ComponentActivity() {
@@ -55,8 +54,6 @@ fun ZaraScreen(vm: AssistantViewModel) {
     val transcript by vm.transcript.collectAsState()
     val listState = rememberLazyListState()
     var inputText by remember { mutableStateOf("") }
-    // TEMP DEBUG HARNESS — REMOVE AFTER SPOTIFY STABILIZATION
-    val context = androidx.compose.ui.platform.LocalContext.current
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -79,15 +76,6 @@ fun ZaraScreen(vm: AssistantViewModel) {
                 fontSize = 22.sp,
                 modifier = Modifier.padding(16.dp)
             )
-            // TEMP DEBUG HARNESS — REMOVE AFTER SPOTIFY STABILIZATION
-            // Only reachable entry point into DebugHarnessActivity. Delete
-            // this TextButton (+ the activity + manifest entry) to remove
-            // the harness entirely.
-            TextButton(onClick = {
-                context.startActivity(Intent(context, DebugHarnessActivity::class.java))
-            }) {
-                Text("Debug", fontSize = 12.sp, color = Color.Gray)
-            }
         }
 
         LazyColumn(
