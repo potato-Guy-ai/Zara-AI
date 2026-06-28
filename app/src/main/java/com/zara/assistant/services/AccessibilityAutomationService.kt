@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import com.zara.assistant.automation.core.UiAutomationEngine
 import com.zara.assistant.utils.ZaraLogger
 
 /**
@@ -59,8 +58,6 @@ class AccessibilityAutomationService : AccessibilityService() {
                 AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
         }
-        // Layer 6.6D Batch 0.2: engine subscribes to this service's event hook now that it exists.
-        UiAutomationEngine.attach()
         ZaraLogger.d("AccessibilityService connected")
     }
 
