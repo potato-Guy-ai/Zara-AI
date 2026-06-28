@@ -62,11 +62,20 @@ import kotlinx.coroutines.*
  * Confirmation debt cleanup: runWorkflow()'s step-loop confirmation block now
  *             gates on ConfirmationManager.store()'s Boolean return value instead
  *             of calling store() unconditionally. store() itself enforces the
- *             "only one pending confirmation globally" invariant atomically; if a
- *             confirmation is already pending (e.g. from the single-command path,
- *             or an earlier step), this step is rejected with the same
- *             "answer the pending confirmation first" message used by
- *             ActionExecutor, instead of overwriting it.
+ *             "only one pending confirmation globally" invariant atomically.
+ * Confirmation debt #4 fix: when store() returns false (another confirmation is
+ *             already pending), the blocked step now goes through the EXACT SAME
+ *             recovery pipeline as the catch-block step failure below it: a
+ *             FailureRecord is built and recorded into both FailureMemory and
+ *             RecoveryManager, ContinuationScope.RECOVERY is activated, and the
+ *             user is told to resolve the pending confirmation first and then say
+ *             "retry". Because ContinuationResolver checks ConfirmationManager
+ *             .hasPending() (Priority 1) before RecoveryManager.hasRecoverable()
+ *             (Priority 2), "retry" only reaches RecoveryManager once the
+ *             original pending confirmation has actually been resolved — no new
+ *             ordering logic was needed for this. Previously this branch only
+ *             called ExecutionQueue.markFailed() and returned a static string,
+ *             leaving the blocked step's intent unrecoverable.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -336,8 +345,26 @@ class VoiceSessionManager(private val context: Context) {
                     // single-pending invariant and returns false instead of overwriting
                     // an existing pending confirmation.
                     if (!ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))) {
+                        // Confirmation debt #4 fix: route through the same recovery
+                        // pipeline as the catch block below, instead of just marking
+                        // FAILED and returning a dead-end message. This makes the
+                        // blocked step resumable via the existing "retry" flow once
+                        // the other pending confirmation is resolved.
+                        ZaraLogger.e("[Workflow] step blocked: confirmation already pending")
                         ExecutionQueue.markFailed(plan.id)
-                        responses.add("Please answer the pending confirmation first. Say yes or no.")
+                        val rec = FailureRecord(
+                            plan.id,
+                            plan.intent,
+                            "confirmation already pending",
+                            listOf("retry", "cancel")
+                        )
+                        FailureMemory.record(rec)
+                        RecoveryManager.recordFailure(rec)
+                        ContinuationContext.activate(ContinuationScope.RECOVERY)
+                        PipelineStateMachine.transition(PipelineState.WAITING_RECOVERY)
+                        InteractionEventPublisher.publish(ZaraInteractionEvent.RecoveryRequired)
+                        ExecutionIntelligenceTelemetry.track("wf_step_blocked_confirmation", plan.id)
+                        responses.add("Another action is awaiting confirmation. Please answer that first, then say retry to continue.")
                         stepFailed = true
                         break
                     }
