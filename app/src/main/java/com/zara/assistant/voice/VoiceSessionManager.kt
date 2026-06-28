@@ -59,6 +59,14 @@ import kotlinx.coroutines.*
  *             sttManager.stop() before every startListening() call. No behavior change.
  * Layer 6.6 logging: ConvLoop diagnostic logs added to TTS callback, startListeningSession,
  *             and beginSttSession. Logging only — no logic changes.
+ * Confirmation debt cleanup: runWorkflow()'s step-loop confirmation block now
+ *             gates on ConfirmationManager.store()'s Boolean return value instead
+ *             of calling store() unconditionally. store() itself enforces the
+ *             "only one pending confirmation globally" invariant atomically; if a
+ *             confirmation is already pending (e.g. from the single-command path,
+ *             or an earlier step), this step is rejected with the same
+ *             "answer the pending confirmation first" message used by
+ *             ActionExecutor, instead of overwriting it.
  */
 class VoiceSessionManager(private val context: Context) {
 
@@ -323,7 +331,16 @@ class VoiceSessionManager(private val context: Context) {
             try {
                 if (plan.requirements.contains(ExecutionRequirement.CONFIRMATION_REQUIRED)) {
                     val prompt = buildConfirmationPrompt(plan.intent)
-                    ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))
+
+                    // Confirmation debt cleanup: store() now atomically enforces the
+                    // single-pending invariant and returns false instead of overwriting
+                    // an existing pending confirmation.
+                    if (!ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))) {
+                        ExecutionQueue.markFailed(plan.id)
+                        responses.add("Please answer the pending confirmation first. Say yes or no.")
+                        stepFailed = true
+                        break
+                    }
                     ExecutionQueue.markWaiting(plan.id)
                     ContinuationContext.activate(ContinuationScope.CONFIRMATION)
                     PipelineStateMachine.transition(PipelineState.WAITING_CONFIRMATION)
