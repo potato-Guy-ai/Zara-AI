@@ -40,6 +40,10 @@ import com.zara.assistant.core.ChannelType
  * SEND_WHATSAPP (note: this differs from the old command-style parser's
  * default of SMS — an accepted, explicitly-specified inconsistency between
  * the two paths, flagged in the Phase 1 audit).
+ *
+ * Patches:
+ *   Bug 1: trailing punctuation stripped from contact only (not body).
+ *   Bug 3: contact length <= 2 yields LOW confidence.
  */
 object MessageNLU {
 
@@ -66,6 +70,9 @@ object MessageNLU {
 
     private val AMBIGUOUS_CONTACTS = setOf("him", "her", "them", "someone", "somebody")
 
+    // Bug 1: strip trailing punctuation from contact token only. Body is never passed here.
+    private fun cleanContact(raw: String): String = raw.trimEnd(',', '.', '!', '?', ';', ':')
+
     /**
      * [normalizedText] must already be lowercased+trimmed (same convention
      * LocalIntentClassifier uses internally — avoids re-normalizing).
@@ -89,7 +96,7 @@ object MessageNLU {
     /** Shared shape: verb [+connector] CONTACT BODY, with a bare CONTACT-only fallback. */
     private fun matchVerbContactBody(text: String, withBody: Regex, bareContact: Regex): MessageParseResult? {
         withBody.find(text)?.let { m ->
-            val contact = m.groupValues[1].trim()
+            val contact = cleanContact(m.groupValues[1].trim())  // Bug 1
             val body = m.groupValues[2].trim()
             if (contact.isNotBlank() && body.isNotBlank()) {
                 return MessageParseResult(
@@ -101,7 +108,7 @@ object MessageNLU {
             }
         }
         bareContact.find(text)?.let { m ->
-            val contact = m.groupValues[1].trim()
+            val contact = cleanContact(m.groupValues[1].trim())  // Bug 1
             if (contact.isNotBlank()) {
                 return MessageParseResult(
                     contact = contact,
@@ -118,7 +125,7 @@ object MessageNLU {
     private fun matchSayTo(text: String): MessageParseResult? {
         reSayTo.find(text)?.let { m ->
             val body = m.groupValues[1].trim()
-            val contact = m.groupValues[2].trim()
+            val contact = cleanContact(m.groupValues[2].trim())  // Bug 1
             if (contact.isNotBlank() && body.isNotBlank()) {
                 return MessageParseResult(
                     contact = contact,
@@ -131,8 +138,11 @@ object MessageNLU {
         return null
     }
 
-    private fun confidenceFor(contact: String): MessageConfidence =
-        if (contact.lowercase() in AMBIGUOUS_CONTACTS) MessageConfidence.LOW else MessageConfidence.HIGH
+    private fun confidenceFor(contact: String): MessageConfidence = when {
+        contact.length <= 2                            -> MessageConfidence.LOW   // Bug 3
+        contact.lowercase() in AMBIGUOUS_CONTACTS      -> MessageConfidence.LOW
+        else                                           -> MessageConfidence.HIGH
+    }
 
     private fun detectChannel(text: String): String {
         val t = text.lowercase()
