@@ -3,6 +3,7 @@ package com.zara.assistant.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.zara.assistant.voice.StreamingTranscriptManager
 import com.zara.assistant.voice.VoiceSessionManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +18,13 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
+
+    // Layer 6.5G Phase 2 — live STT transcript
+    val transcript: StateFlow<String> = StreamingTranscriptManager.transcript
+
+    init {
+        StreamingTranscriptManager.register()
+    }
 
     fun processText(text: String) {
         addMessage(text, MessageRole.USER)
@@ -48,6 +56,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        StreamingTranscriptManager.unregister()
         voiceSession.stop()
         super.onCleared()
     }

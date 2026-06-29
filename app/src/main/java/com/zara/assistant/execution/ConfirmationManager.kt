@@ -8,6 +8,13 @@ import com.zara.assistant.utils.ZaraLogger
  * FIX 1: resolve() no longer clears pending on yes.
  *   pop() returns-and-clears; called by VoiceSessionManager after confirmed=true.
  *   Guarantees plan is never null when retrieved after confirmation.
+ *
+ * Confirmation debt cleanup: store() now atomically enforces the
+ * "only one pending confirmation globally" invariant. It returns false
+ * (and does NOT overwrite) if a confirmation is already pending, true
+ * if the request was stored. This replaces the previous pattern where
+ * callers checked hasPending() separately before calling store(),
+ * which left a gap for callers that forgot to check.
  */
 object ConfirmationManager {
 
@@ -22,9 +29,20 @@ object ConfirmationManager {
 
     fun hasPending(): Boolean = pending != null
 
-    fun store(request: ConfirmationRequest) {
+    /**
+     * Atomically stores a confirmation request.
+     * Returns false (no overwrite, no silent replacement) if a
+     * confirmation is already pending. Returns true if stored.
+     */
+    fun store(request: ConfirmationRequest): Boolean {
+        if (pending != null) {
+            ZaraLogger.d("[Confirmation] rejected: pending already exists")
+            return false
+        }
+
         pending = request
         ZaraLogger.d("[Confirmation] pending: ${request.prompt}")
+        return true
     }
 
     fun clear() { pending = null }

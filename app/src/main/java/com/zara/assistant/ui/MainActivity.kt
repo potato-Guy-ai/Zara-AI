@@ -50,6 +50,8 @@ class MainActivity : ComponentActivity() {
 fun ZaraScreen(vm: AssistantViewModel) {
     val messages by vm.messages.collectAsState()
     val isListening by vm.isListening.collectAsState()
+    // Layer 6.5G Phase 2 — live transcript
+    val transcript by vm.transcript.collectAsState()
     val listState = rememberLazyListState()
     var inputText by remember { mutableStateOf("") }
 
@@ -63,12 +65,18 @@ fun ZaraScreen(vm: AssistantViewModel) {
             .background(MaterialTheme.colorScheme.background)
             .systemBarsPadding()
     ) {
-        Text(
-            text = "Zara",
-            color = MaterialTheme.colorScheme.primary,
-            fontSize = 22.sp,
-            modifier = Modifier.padding(16.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Zara",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 22.sp,
+                modifier = Modifier.padding(16.dp)
+            )
+        }
 
         LazyColumn(
             state = listState,
@@ -85,7 +93,17 @@ fun ZaraScreen(vm: AssistantViewModel) {
                 "Listening...",
                 color = MaterialTheme.colorScheme.primary,
                 fontSize = 13.sp,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
+            )
+        }
+
+        // Layer 6.5G Phase 2 — live transcript display
+        if (transcript.isNotBlank()) {
+            Text(
+                text = transcript,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp)
             )
         }
 
