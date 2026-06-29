@@ -19,174 +19,40 @@ Main remains protected until audited and merged.
 
 ---
 
-# Completed Work
+# Completed Layers
 
-## App Launching
-
-Status:
-
-Working.
-
-Features:
-
-* Installed app discovery
-* QUERY_ALL_PACKAGES support
-* Alias resolution
-* Fuzzy matching
-* Clarification support
-
-Examples:
-
-* ig → Instagram
-* yt → YouTube
-* ff → Free Fire
-* ff max → Free Fire Max.
+✓ Layer 1 — Wakeword Foundation
+✓ Layer 2 — STT Pipeline
+✓ Layer 3 — Intent Classification
+✓ Layer 4A — Slot Infrastructure
+✓ Layer 4B — Core Slot Extraction
+✓ Layer 5.x — Clarification & Entity Resolution
+✓ Layer 6.0 — Session Context Foundation
+✓ Layer 6 Contact Hardening
+✓ Layer 6 Execution Consistency Fixes
+✓ Layer 6.5A — Execution Intelligence Core
 
 ---
 
-## AppResolver v2
+# Working Features
 
-Status:
-
-Complete.
-
-Capabilities:
-
-Priority Order:
-
-1. Exact Match
-2. Alias Match
-3. StartsWith Match
-4. Contains Match
-5. Fuzzy Match
-6. Clarification
-
-Notes:
-
-Short aliases use explicit alias mapping.
-
-Fuzzy matching is length-gated.
-
----
-
-## STT Correction Layer
-
-Status:
-
-Complete.
-
-Bug Fixed:
-
-Previously:
-
-instagram
-↓
-
-instagramgram
-
-snapchat
-↓
-
-snapchatchat
-
-Root Cause:
-
-Unbounded string replacement.
-
-Fix:
-
-Word-boundary regex replacement.
-
-Result:
-
-No duplicate expansions.
-
----
-
-## Audio Stability
-
-Status:
-
-Complete.
-
-Implemented:
-
-* AudioFocus acquisition
-* AudioFocus release
-* STT callback cleanup
-* Resource lifecycle cleanup
-
-Purpose:
-
-Improve long-session stability and audio coexistence.
-
----
-
-## Wakeword Stability Audit
-
-Status:
-
-Completed.
-
-Result:
-
-No evidence of:
-
-* Listener accumulation
-* Coroutine accumulation
-* Restart loops
-* Long-session degradation
-
-Notes:
-
-EnergyVadEngine remains a stub and is a future implementation target.
-
----
-
-# Known Limitations
-
-## Missing Entity Extraction
-
-Examples that are not fully supported:
-
-* send hi to malvin on whatsapp
-* call ahmed
-* message dad
-* email john
-
-Reason:
-
-No generalized slot extraction layer.
-
----
-
-## Missing Semantic Understanding
-
-Examples:
-
-* Heavy STT mistakes
-* Natural language variations
-
-Planned Solution:
-
-MiniLM fallback layer.
-
----
-
-## Missing Context Layer
-
-Examples:
-
-User:
-Send a message to Malvin.
-
-Zara:
-What should I send?
-
-User:
-Tell him I'll be late.
-
-Currently unsupported.
+✓ Contact Resolution
+✓ Clarification Flow
+✓ Contact Deduplication
+✓ Context Recall
+✓ Pronoun Resolution
+✓ WhatsApp Routing
+✓ SMS Routing
+✓ App Routing
+✓ Execution Consistency
+✓ Confirmation Engine
+✓ Cancellation Engine
+✓ Recovery Engine
+✓ Execution Queue
+✓ Dependency Analysis
+✓ Task Registry
+✓ Failure Memory
+✓ Execution Contracts
 
 ---
 
