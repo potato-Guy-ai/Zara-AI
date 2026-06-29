@@ -82,6 +82,14 @@ dependencies {
     // OkHttp (cloud AI calls)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    // Gson (JSON parsing — Layer 6.6 Phase 2C.2 infra: Spotify Web API responses)
+    implementation("com.google.code.gson:gson:2.10.1")
+
+    // Spotify App Remote SDK (Layer 6.6 Phase 2C.2 infra — premium direct playback)
+    // Not available as a resolvable Maven/JitPack dependency. Using the
+    // manually-provided AAR at app/libs/ instead.
+    implementation(files("libs/spotify-app-remote-release-0.8.0.aar"))
+
     // ONNX Runtime (wake word model inference - optional, swap out later)
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
 

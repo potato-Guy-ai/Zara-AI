@@ -1,5 +1,11 @@
 package com.zara.assistant.core
 
+/**
+ * B2.2 + Layer 6.5F Phase 1
+ *
+ * Added: MEDIA_CONTROL action constant.
+ * Added: MEDIA_ACTION extra key.
+ */
 data class ZaraIntent(
     val type: IntentType,
     val action: String,
@@ -38,10 +44,11 @@ object IntentAction {
     const val NAVIGATE_TO    = "NAVIGATE_TO"
     const val PLAY_MUSIC     = "PLAY_MUSIC"
     const val SEARCH_QUERY   = "SEARCH_QUERY"
-    // B2.2: clock utility
     const val SHOW_ALARMS    = "SHOW_ALARMS"
     const val SHOW_TIMERS    = "SHOW_TIMERS"
     const val OPEN_CLOCK     = "OPEN_CLOCK"
+    // Layer 6.5F Phase 1: media transport control
+    const val MEDIA_CONTROL  = "MEDIA_CONTROL"
     const val TIME           = "TIME"
     const val DATE           = "DATE"
     const val GREETING       = "GREETING"
@@ -61,7 +68,6 @@ object IntentExtra {
     const val SONG        = "song"
     const val ARTIST      = "artist"
     const val TIME        = "time"
-    // B2.2: alarm time slots
     const val ALARM_HOUR   = "alarm_hour"
     const val ALARM_MINUTE = "alarm_minute"
     const val DESTINATION = "destination"
@@ -75,6 +81,8 @@ object IntentExtra {
     const val ENTITY_CONFIDENCE  = "entity_confidence"
     const val ENTITY_CANDIDATES  = "entity_candidates"
     const val NEEDS_CLARIFICATION = "needs_clarification"
+    // Layer 6.5F Phase 1
+    const val MEDIA_ACTION = "media_action"  // stores MediaControlAction.name()
 }
 
 object ChannelType {

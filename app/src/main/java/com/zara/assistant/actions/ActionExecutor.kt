@@ -3,6 +3,8 @@ package com.zara.assistant.actions
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import com.zara.assistant.continuation.ContinuationContext
+import com.zara.assistant.continuation.ContinuationScope
 import com.zara.assistant.core.AppActionPlanner
 import com.zara.assistant.core.ClarificationManager
 import com.zara.assistant.core.ExecutionContract
@@ -11,12 +13,55 @@ import com.zara.assistant.core.ExecutionTelemetry
 import com.zara.assistant.core.IntentAction
 import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
+import com.zara.assistant.execution.ConfirmationManager
+import com.zara.assistant.execution.ConfirmationRequest
+import com.zara.assistant.execution.ExecutionPlan
+import com.zara.assistant.execution.ExecutionRequirement
+import com.zara.assistant.media.MediaControlAction
+import com.zara.assistant.media.MediaControlManager
 import com.zara.assistant.models.ClarificationCandidate
 import com.zara.assistant.models.ClarificationEntityType
 import com.zara.assistant.models.PendingClarification
+import com.zara.assistant.playback.FreePlaybackEngine
+import com.zara.assistant.playback.FreePlaybackResultType
+import com.zara.assistant.playback.PlaybackIntentParser
+import com.zara.assistant.playback.PlaybackOrchestrator
+import com.zara.assistant.playback.PlaybackResolver
+import com.zara.assistant.playback.PlaybackRoute
+import com.zara.assistant.playback.PremiumPlaybackEngine
+import com.zara.assistant.playback.SpotifyApiClientImpl
+import com.zara.assistant.playback.SpotifyPlaybackResultType
+import com.zara.assistant.playback.UserTierDetector
 import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
+/**
+ * Layer 6.5F Phase 1: Added MEDIA_CONTROL case in executeRaw().
+ * Layer 6.6 wiring: PLAY_MUSIC now routes through the playback pipeline
+ * (PlaybackIntentParser -> PlaybackResolver -> PlaybackOrchestrator ->
+ * PremiumPlaybackEngine / FreePlaybackEngine), falling back to the
+ * legacy appActions.playMusic(...) path on any failure or FALLBACK_SEARCH route.
+ * Layer 6.6 confirmation gate: single-command path now goes through the same
+ * ConfirmationManager flow as the workflow path for SEND_WHATSAPP, SEND_SMS, CALL.
+ *
+ * Layer 6.6 confirmation-loop fix: the gate previously re-triggered on the
+ * "yes" re-entry path, because ConfirmationManager.pop() clears `pending`
+ * BEFORE onExecute() re-enters this function — so !hasPending() was true
+ * again on re-entry and the gate fired a second time, looping forever.
+ * Fix: gate now checks an explicit per-intent approval marker
+ * (extra["confirmation_approved"]) that ContinuationResolver stamps onto
+ * the intent (via .copy(), since extra is an immutable Map) right before
+ * calling onExecute() on the CONFIRM path. hasPending() is no longer part
+ * of this condition.
+ *
+ * Confirmation debt cleanup: the separate caller-side hasPending() check
+ * (former "Option A" overwrite guard) has been removed. ConfirmationManager
+ * .store() now atomically enforces the "only one pending confirmation
+ * globally" invariant itself and returns false if a confirmation is
+ * already pending. This call site, and VoiceSessionManager.runWorkflow()'s
+ * call site, both now gate on store()'s return value instead of duplicating
+ * the hasPending() check beforehand.
+ */
 class ActionExecutor(private val context: Context) {
 
     private val appActions   = AppActions(context)
@@ -25,8 +70,33 @@ class ActionExecutor(private val context: Context) {
 
     suspend fun execute(intent: ZaraIntent): String {
         ZaraLogger.d("Executing: ${intent.action} target=${intent.target}")
-        if (intent.extra["unsupported_command"] == "true") return "Sorry, that command isn\'t supported."
+        if (intent.extra["unsupported_command"] == "true") return "Sorry, that command isn't supported."
         if (intent.extra[IntentExtra.NEEDS_CLARIFICATION] == "true") return handleClarificationNeeded(intent)
+
+        // ── Confirmation gate (single-command path) ───────────────────────────
+        // Layer 6.6 confirmation-loop fix: gated on the per-intent approval
+        // marker, not ConfirmationManager.hasPending() (which pop() already
+        // cleared by the time the approved intent re-enters here).
+        if (ConfirmationManager.requiresConfirmation(intent.action) && intent.extra["confirmation_approved"] != "true") {
+
+            val plan = ExecutionPlan(
+                id           = UUID.randomUUID().toString(),
+                intent       = intent,
+                requirements = setOf(ExecutionRequirement.CONFIRMATION_REQUIRED)
+            )
+            val prompt = buildConfirmationPrompt(intent)
+
+            // Confirmation debt cleanup: store() itself now enforces the
+            // single-pending invariant atomically and returns false instead
+            // of overwriting an existing pending confirmation.
+            if (!ConfirmationManager.store(ConfirmationRequest(planId = plan.id, prompt = prompt, plan = plan))) {
+                return "Please answer the pending confirmation first. Say yes or no."
+            }
+            ContinuationContext.activate(ContinuationScope.CONFIRMATION)
+            ZaraLogger.d("[Confirmation] gate stored for ${intent.action} planId=${plan.id}")
+            return prompt
+        }
+        // ── End confirmation gate ─────────────────────────────────────────────
 
         val contract: ExecutionContract? = ExecutionGuard.readContract(intent)
         if (contract != null) {
@@ -55,6 +125,17 @@ class ActionExecutor(private val context: Context) {
         } catch (e: Exception) { ZaraLogger.e("ActionExecutor error: ${e.message}"); "Something went wrong executing that." }
     }
 
+    private fun buildConfirmationPrompt(intent: ZaraIntent): String {
+        val contact = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
+        val body    = intent.extra[IntentExtra.BODY]
+        return when (intent.action) {
+            IntentAction.SEND_WHATSAPP -> if (!body.isNullOrBlank()) "Message to $contact ready: \"$body\". Send?" else "Send WhatsApp to $contact?"
+            IntentAction.SEND_SMS      -> if (!body.isNullOrBlank()) "SMS to $contact ready: \"$body\". Send?" else "Send SMS to $contact?"
+            IntentAction.CALL          -> "Call $contact now?"
+            else                       -> "Confirm action for $contact?"
+        }
+    }
+
     private fun executeResolvedCall(intent: ZaraIntent): String? {
         val phone = intent.extra[IntentExtra.PHONE_NUMBER] ?: return null
         val name  = intent.extra[IntentExtra.CONTACT_NAME] ?: intent.target ?: "contact"
@@ -70,7 +151,7 @@ class ActionExecutor(private val context: Context) {
             val uri = Uri.parse("https://wa.me/$cleaned?text=${Uri.encode(body)}")
             context.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             "Opening WhatsApp to message $name."
-        } catch (e: Exception) { "Couldn\'t open WhatsApp." }
+        } catch (e: Exception) { "Couldn't open WhatsApp." }
     }
 
     private suspend fun executeResolvedSms(intent: ZaraIntent): String? {
@@ -84,7 +165,7 @@ class ActionExecutor(private val context: Context) {
             }
             context.startActivity(smsIntent)
             "Opening SMS to $name."
-        } catch (e: Exception) { "Couldn\'t open SMS app." }
+        } catch (e: Exception) { "Couldn't open SMS app." }
     }
 
     private fun handleAmbiguous(sentinel: String, intent: ZaraIntent): String {
@@ -95,7 +176,7 @@ class ActionExecutor(private val context: Context) {
             candidates.add(ClarificationCandidate(displayName = parts[i], resolvedValue = parts[i + 1]))
             i += 2
         }
-        if (candidates.isEmpty()) return "I found multiple contacts but couldn\'t list them."
+        if (candidates.isEmpty()) return "I found multiple contacts but couldn't list them."
         if (!ClarificationManager.hasPending()) {
             ClarificationManager.store(
                 PendingClarification(
@@ -134,7 +215,7 @@ class ActionExecutor(private val context: Context) {
                            else appActions.playMusic(contract.query ?: contract.target, appName)
                 else -> if (pkg != null) appActions.launchByPackage(pkg, appName) else appActions.openApp(contract.app)
             }
-        } catch (e: Exception) { ZaraLogger.e("executeContract: ${e.message}"); "Couldn\'t complete \'${contract.action}\' on ${contract.app}." }
+        } catch (e: Exception) { ZaraLogger.e("executeContract: ${e.message}"); "Couldn't complete '${contract.action}' on ${contract.app}." }
     }
 
     private suspend fun executePlan(intent: ZaraIntent, app: String): String {
@@ -163,6 +244,65 @@ class ActionExecutor(private val context: Context) {
             }
             if (raw.startsWith(CallActions.AMBIGUOUS_PREFIX)) handleAmbiguous(raw, intent) else raw
         } catch (e: Exception) { ZaraLogger.e("executePlan: ${e.message}"); "Something went wrong." }
+    }
+
+    /**
+     * Layer 6.6 wiring — PLAY_MUSIC pipeline entry point.
+     * Tries Playback pipeline; falls back to legacy appActions on any
+     * failure, FALLBACK_SEARCH route, or non-success engine result.
+     * AUTH_REQUIRED from PremiumPlaybackEngine is returned as-is (never
+     * falls back to legacy — that would silently bypass the auth prompt).
+     */
+    private suspend fun executePlayMusic(intent: ZaraIntent): String {
+        ZaraLogger.d("[Playback] entered")
+        val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
+        val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
+        val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
+
+        fun legacyPlayMusic(): String {
+            ZaraLogger.d("[Playback] fallback triggered")
+            return if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
+            else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+        }
+
+        return try {
+            val playbackIntent = PlaybackIntentParser.parse(content ?: "")
+            ZaraLogger.d("[Playback] parser=$playbackIntent")
+            val target = PlaybackResolver.resolve(playbackIntent)
+            ZaraLogger.d("[Playback] target=$target")
+            val tier = UserTierDetector.detect()
+            ZaraLogger.d("[Playback] tier=$tier")
+            val plan = PlaybackOrchestrator.orchestrate(target, tier)
+            ZaraLogger.d("[Playback] route=${plan?.route}")
+
+            if (plan == null) {
+                legacyPlayMusic()
+            } else when (plan.route) {
+                PlaybackRoute.PREMIUM_DIRECT -> {
+                    ZaraLogger.d("[Playback] premium engine entered")
+                    val client = SpotifyApiClientImpl(context)
+                    val result = PremiumPlaybackEngine(client).run(plan)
+                    when (result.type) {
+                        SpotifyPlaybackResultType.AUTH_REQUIRED -> result.message
+                        SpotifyPlaybackResultType.SUCCESS -> result.message
+                        else -> legacyPlayMusic()
+                    }
+                }
+                PlaybackRoute.FREE_ASSISTED -> {
+                    ZaraLogger.d("[Playback] free engine entered")
+                    val result = FreePlaybackEngine.run(context, plan)
+                    when (result.type) {
+                        FreePlaybackResultType.SUCCESS,
+                        FreePlaybackResultType.FALLBACK_USED -> result.message
+                        else -> legacyPlayMusic()
+                    }
+                }
+                PlaybackRoute.FALLBACK_SEARCH -> legacyPlayMusic()
+            }
+        } catch (e: Exception) {
+            ZaraLogger.e("[Playback] exception=${e.message}")
+            legacyPlayMusic()
+        }
     }
 
     private suspend fun executeRaw(intent: ZaraIntent): String {
@@ -201,12 +341,15 @@ class ActionExecutor(private val context: Context) {
             IntentAction.SHOW_ALARMS -> appActions.openAlarm()
             IntentAction.SHOW_TIMERS -> appActions.showTimers()
             IntentAction.OPEN_CLOCK  -> appActions.openAlarm()
-            IntentAction.PLAY_MUSIC  -> {
-                val content = intent.extra[IntentExtra.CONTENT] ?: intent.target
-                val pkg     = intent.extra[IntentExtra.APP_PACKAGE]
-                val appName = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP]
-                if (pkg != null) appActions.playMusicByPackage(pkg, appName, content)
-                else appActions.playMusic(content, intent.extra[IntentExtra.APP])
+            // Layer 6.6 wiring: PLAY_MUSIC now routes through the playback pipeline.
+            IntentAction.PLAY_MUSIC  -> executePlayMusic(intent)
+            // Layer 6.5F Phase 1: media transport control
+            IntentAction.MEDIA_CONTROL -> {
+                val actionName = intent.extra[IntentExtra.MEDIA_ACTION]
+                val mediaAction = actionName?.let {
+                    try { MediaControlAction.valueOf(it) } catch (e: IllegalArgumentException) { null }
+                } ?: return "Unknown media action."
+                MediaControlManager.execute(context, mediaAction)
             }
             IntentAction.SEARCH_QUERY -> {
                 val query = intent.extra[IntentExtra.QUERY] ?: intent.target ?: return "What would you like to search for?"
@@ -223,7 +366,7 @@ class ActionExecutor(private val context: Context) {
             IntentAction.SET_VOLUME     -> mediaActions.adjustVolume(intent.extra[IntentExtra.DIRECTION] ?: "up")
             IntentAction.SET_SILENT     -> mediaActions.setSilentMode(intent.extra[IntentExtra.ON] == "true", intent.extra[IntentExtra.MODE] ?: "silent")
             IntentAction.LOCK_SCREEN    -> mediaActions.lockScreen()
-            else -> "I don\'t know how to do \'${intent.action}\' yet."
+            else -> "I don't know how to do '${intent.action}' yet."
         }
     }
 
@@ -235,7 +378,7 @@ class ActionExecutor(private val context: Context) {
 
     private fun handleClarificationNeeded(intent: ZaraIntent): String {
         val rawCandidates = intent.extra[IntentExtra.ENTITY_CANDIDATES]?.split("|")?.filter { it.isNotBlank() } ?: emptyList()
-        if (rawCandidates.isEmpty()) return "I\'m not sure who or what you mean."
+        if (rawCandidates.isEmpty()) return "I'm not sure who or what you mean."
         if (!ClarificationManager.hasPending()) {
             val entityType = when (intent.action) {
                 IntentAction.CALL, IntentAction.SEND_SMS, IntentAction.SEND_WHATSAPP -> ClarificationEntityType.CONTACT

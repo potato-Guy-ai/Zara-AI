@@ -3,14 +3,11 @@ package com.zara.assistant.execution
 import com.zara.assistant.utils.ZaraLogger
 
 /**
- * Layer 6.5A + Final Hardening
+ * Layer 6.5A + Final Hardening + 6.5B Completion Patch
  *
- * FIX 2: dequeueNext() enforces dependsOnId.
- *   - Dependency COMPLETED   → allow execution
- *   - Dependency FAILED/CANCELLED → auto-fail dependent, skip
- *   - Dependency PENDING/RUNNING/WAITING → skip (not ready)
- *
- * FIX 3: markWaitingCompleted / markWaitingCancelled clear WAITING state.
+ * Added: cancelByIds(ids) — cancels only PENDING items whose planId is in the given set.
+ * Used by WorkflowEngine.cancelWorkflowItems() for STOP_WORKFLOW cleanup.
+ * Does not affect RUNNING, WAITING, COMPLETED, FAILED, or unrelated items.
  */
 object ExecutionQueue {
 
@@ -23,29 +20,22 @@ object ExecutionQueue {
 
     fun peek(): QueueItem? = queue.firstOrNull { it.state == TaskState.PENDING }
 
-    /**
-     * FIX 2: Returns next executable PENDING item, respecting dependsOnId.
-     * Auto-fails items whose dependency has failed/cancelled.
-     */
     fun dequeueNext(): QueueItem? {
         for (item in queue) {
             if (item.state != TaskState.PENDING) continue
-
             val depId = item.plan.dependsOnId
             if (depId != null) {
                 val dep = queue.firstOrNull { it.plan.id == depId }
                 when (dep?.state) {
-                    TaskState.COMPLETED -> { /* dependency satisfied, proceed */ }
+                    TaskState.COMPLETED -> { /* proceed */ }
                     TaskState.FAILED, TaskState.CANCELLED -> {
-                        // Auto-fail dependent
                         item.state = TaskState.FAILED
                         ZaraLogger.d("[Queue] ${item.plan.id} auto-failed: dependency $depId ${dep.state}")
-                        continue  // skip to next
+                        continue
                     }
-                    else -> continue  // dependency not ready yet
+                    else -> continue
                 }
             }
-
             item.state = TaskState.RUNNING
             return item
         }
@@ -57,18 +47,26 @@ object ExecutionQueue {
     fun markCancelled(id: String) = transition(id, TaskState.CANCELLED)
     fun markWaiting(id: String)   = transition(id, TaskState.WAITING)
 
-    /** FIX 3: Transition WAITING task to COMPLETED after confirmation accepted. */
     fun markWaitingCompleted(id: String) {
         queue.firstOrNull { it.plan.id == id && it.state == TaskState.WAITING }
             ?.let { it.state = TaskState.COMPLETED }
         ZaraLogger.d("[Queue] $id WAITING -> COMPLETED")
     }
 
-    /** FIX 3: Transition WAITING task to CANCELLED after confirmation rejected. */
     fun markWaitingCancelled(id: String) {
         queue.firstOrNull { it.plan.id == id && it.state == TaskState.WAITING }
             ?.let { it.state = TaskState.CANCELLED }
         ZaraLogger.d("[Queue] $id WAITING -> CANCELLED")
+    }
+
+    /** FIX 2: Cancel only PENDING items whose planId is in the given set. */
+    fun cancelByIds(ids: Set<String>) {
+        queue.forEach { item ->
+            if (item.plan.id in ids && item.state == TaskState.PENDING) {
+                item.state = TaskState.CANCELLED
+                ZaraLogger.d("[Queue] ${item.plan.id} cancelled by workflow cleanup")
+            }
+        }
     }
 
     private fun transition(id: String, newState: TaskState) {

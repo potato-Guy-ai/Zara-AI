@@ -4,12 +4,16 @@ import com.zara.assistant.core.IntentExtra
 import com.zara.assistant.core.ZaraIntent
 
 /**
- * Layer 5.6 + 5 Hardening + Final Safety Fixes + B2.1 Fix
+ * Layer 5.6 + 5 Hardening + Final Safety Fixes + B2.1 Fix + Layer 6.5F Fix
  *
  * B2.1 FIX: detectApp() no longer intercepts OPEN_APP intents for YouTube.
  * If the intent action is OPEN_APP and the raw text contains no play/search verb,
  * AppActionPlanner returns the intent unchanged — OPEN_APP flows directly to
  * ActionExecutor.executeRaw() → AppActions.openApp() / launchByPackage().
+ *
+ * Layer 6.5F FIX: MEDIA_CONTROL bypasses AppActionPlanner entirely.
+ * Prevents "music" keyword in commands like "pause music" from injecting
+ * KEY_APP = "music" and routing to executePlan() instead of executeRaw().
  */
 object AppActionPlanner {
 
@@ -58,6 +62,10 @@ object AppActionPlanner {
             newExtra["unsupported_command"] = "true"
             return intent.copy(extra = newExtra)
         }
+
+        // Layer 6.5F FIX: MEDIA_CONTROL must bypass planning entirely.
+        // Prevents "music" in "pause/play/stop/continue music" from injecting KEY_APP.
+        if (intent.action == IntentAction.MEDIA_CONTROL) return intent
 
         // B2.1 FIX: if this is a pure OPEN_APP intent (no media verb), skip planning entirely.
         // Allows OPEN_APP to flow to executeRaw() → openApp() / launchByPackage() unchanged.
