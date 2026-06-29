@@ -1,5 +1,7 @@
 package com.zara.assistant.core
 
+import com.zara.assistant.core.messaging.MessageNLU
+
 /**
  * B2.2 + Layer 6.5F Phase 1
  *
@@ -7,6 +9,22 @@ package com.zara.assistant.core
  *   pause / resume / next / previous / stop music / next song etc.
  *   Resolved via MediaControlAction.fromText() — no regex duplication.
  *   Stored in MEDIA_ACTION extra. Inserted before search step.
+ *
+ * Layer 6.7 Phase 3 — Messaging NLU fallback:
+ *   When the old command-style message parser (isMessageIntent/messageIntent)
+ *   either doesn't recognize the utterance at all, or recognizes the gate but
+ *   fails to extract a usable intent (e.g. "tell amma I'll be late" — passes
+ *   the "tell " prefix gate but has no "saying/that/:" delimiter), this now
+ *   falls back to MessageNLU.parse() for casual phrasings: "tell X body",
+ *   "let X know body", "ask X if/whether body", "say body to X",
+ *   "inform X body". MessageNLU is parser-only (returns MessageParseResult);
+ *   ZaraIntent construction stays centralized here via action(), unchanged
+ *   from how the old parser already built SEND_WHATSAPP/SEND_SMS intents.
+ *   Inserted at the same priority position the old message check already
+ *   occupied — still after reKnowledge/reCallAction, still before
+ *   reNavigate/MediaControlAction/rePlay/reOpenTrigger/reSearch — so
+ *   existing command-style behavior and "tell me about X" knowledge
+ *   questions are unaffected.
  */
 class LocalIntentClassifier {
 
@@ -64,7 +82,27 @@ class LocalIntentClassifier {
             if (target.isNotBlank()) return action(IntentAction.CALL, text, target = target)
         }
 
-        if (isMessageIntent(t)) return messageIntent(t, text)
+        if (isMessageIntent(t)) {
+            val intent = messageIntent(t, text)
+            if (intent.action != IntentAction.UNKNOWN) return intent
+            // Old command-style parser recognized the gate (e.g. "tell ")
+            // but couldn't extract contact/body (no "saying"/"that"/":" etc.)
+            // — fall through to MessageNLU below instead of returning UNKNOWN.
+        }
+        // Layer 6.7 Phase 3: casual-phrasing fallback (tell/let/ask/say/inform).
+        // Independent of isMessageIntent() since most of these patterns don't
+        // share its trigger words (e.g. "let dad know..." / "ask mom if...").
+        MessageNLU.parse(t)?.let { result ->
+            val intentAction = if (result.channel == ChannelType.WHATSAPP) IntentAction.SEND_WHATSAPP else IntentAction.SEND_SMS
+            return action(
+                intentAction, text, target = result.contact,
+                extra = buildMap {
+                    if (!result.body.isNullOrBlank()) put(IntentExtra.BODY, result.body)
+                    put(IntentExtra.CHANNEL, result.channel)
+                    put("message_confidence", result.confidence.name)
+                }
+            )
+        }
 
         reNavigate.find(t)?.let { m ->
             val dest = m.groupValues[2].trim()
