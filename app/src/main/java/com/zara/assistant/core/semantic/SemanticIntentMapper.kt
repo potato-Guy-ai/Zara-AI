@@ -24,6 +24,16 @@ import com.zara.assistant.core.ZaraIntent
  * Entity mapping uses the keys produced by [EntityExtractor] and translates
  * them into the [IntentExtra] keys already consumed by ActionExecutor /
  * SlotExtractor / EntityResolver — no downstream changes required.
+ *
+ * Fix 1 (layer6-6-minilm-intent patch): NAVIGATION and APP_CONTROL return null.
+ *   Entity extraction for destination and app_name is not yet implemented;
+ *   passing raw full text as target caused downstream resolver failures.
+ *   Both intents now fall through to cloud until entity extraction is ready.
+ *
+ * Fix 2 (layer6-6-minilm-intent patch): REMINDER maps to SET_TIMER ONLY for
+ *   simple timer-style reminders (duration present, no task/contact/body entity).
+ *   Reminders with a task, contact, or body entity return null → cloud fallback,
+ *   which preserves all slot data and handles them correctly.
  */
 object SemanticIntentMapper {
 
@@ -86,18 +96,25 @@ object SemanticIntentMapper {
             }
 
             SemanticIntent.REMINDER -> {
-                // No REMINDER action exists yet in IntentAction — map to SET_TIMER,
-                // which is the closest existing action. Duration entity
-                // ("2 hours") maps to IntentExtra.DURATION for SlotExtractor.
+                // Fix 2: only map to SET_TIMER for simple "remind me in X" patterns —
+                // i.e. duration is present AND no task/contact/body entity is present.
+                // Anything with a task, contact, or body needs cloud to handle slots correctly.
                 val duration = result.entities["duration"]
-                ZaraIntent(
-                    type    = IntentType.ACTION,
-                    action  = IntentAction.SET_TIMER,
-                    extra   = buildMap {
-                        if (!duration.isNullOrBlank()) put(IntentExtra.DURATION, duration)
-                    },
-                    rawText = originalText
-                )
+                val hasTask  = !result.entities["task"].isNullOrBlank()
+                        || !result.entities["contact"].isNullOrBlank()
+                        || !result.entities["message"].isNullOrBlank()
+                        || !result.entities["body"].isNullOrBlank()
+
+                if (!duration.isNullOrBlank() && !hasTask) {
+                    ZaraIntent(
+                        type    = IntentType.ACTION,
+                        action  = IntentAction.SET_TIMER,
+                        extra   = mapOf(IntentExtra.DURATION to duration),
+                        rawText = originalText
+                    )
+                } else {
+                    null  // cloud fallback — preserves full intent context
+                }
             }
 
             SemanticIntent.SEARCH -> {
@@ -110,25 +127,17 @@ object SemanticIntentMapper {
             }
 
             SemanticIntent.NAVIGATION -> {
-                // EntityExtractor does not yet extract a destination for NAVIGATION;
-                // pass the raw text as target so ActionExecutor can handle it.
-                ZaraIntent(
-                    type    = IntentType.ACTION,
-                    action  = IntentAction.NAVIGATE_TO,
-                    target  = originalText,
-                    rawText = originalText
-                )
+                // Fix 1: EntityExtractor does not yet extract a destination.
+                // Returning raw full text as target caused downstream resolver failures.
+                // Return null until destination entity extraction is implemented.
+                null
             }
 
             SemanticIntent.APP_CONTROL -> {
-                // EntityExtractor does not yet extract an app name for APP_CONTROL;
-                // pass the raw text as target for AppActionPlanner to resolve.
-                ZaraIntent(
-                    type    = IntentType.ACTION,
-                    action  = IntentAction.OPEN_APP,
-                    target  = originalText,
-                    rawText = originalText
-                )
+                // Fix 1: EntityExtractor does not yet extract an app name.
+                // Returning raw full text as target caused AppActionPlanner failures.
+                // Return null until app_name entity extraction is implemented.
+                null
             }
 
             SemanticIntent.SYSTEM_CONTROL -> {
