@@ -1,6 +1,10 @@
 package com.zara.assistant.core
 
 import com.zara.assistant.core.messaging.MessageNLU
+import com.zara.assistant.core.semantic.MiniLMManager
+import com.zara.assistant.core.semantic.SemanticIntentEngine
+import com.zara.assistant.core.semantic.SemanticIntentMapper
+import com.zara.assistant.utils.ZaraLogger
 
 /**
  * B2.2 + Layer 6.5F Phase 1
@@ -25,8 +29,25 @@ import com.zara.assistant.core.messaging.MessageNLU
  *   reNavigate/MediaControlAction/rePlay/reOpenTrigger/reSearch — so
  *   existing command-style behavior and "tell me about X" knowledge
  *   questions are unaffected.
+ *
+ * Layer 6.6 — MiniLM semantic fallback:
+ *   Injected BEFORE the final cloud/unknown fallback. When every rule and
+ *   the MessageNLU parser have failed to produce a non-UNKNOWN intent,
+ *   SemanticIntentEngine.resolve() is called once. The model is lazy-loaded
+ *   on first use (MiniLMManager.loadModel() is a no-op if already loaded).
+ *   If SemanticIntentMapper returns a valid ZaraIntent, it is returned
+ *   immediately and logged. If it returns null (low confidence / UNKNOWN /
+ *   fallbackRequired), we fall through to the existing cloud/unknown path
+ *   unchanged.
+ *
+ *   Dependency wiring: SemanticIntentEngine is injected via constructor
+ *   (preferred per spec). A zero-argument convenience constructor creates
+ *   the default stack (MiniLMManager → SemanticIntentEngine) so all
+ *   existing call sites that do `LocalIntentClassifier()` need no changes.
  */
-class LocalIntentClassifier {
+class LocalIntentClassifier(
+    private val semanticIntentEngine: SemanticIntentEngine = SemanticIntentEngine(MiniLMManager())
+) {
 
     private val reKnowledge = Regex(
         ".*(how (do|does|can|would|to)|what is|what are|explain|tell me about|" +
@@ -160,6 +181,17 @@ class LocalIntentClassifier {
         if (reDate.matches(t))     return conv(IntentAction.DATE, text)
         if (reGreeting.matches(t)) return conv(IntentAction.GREETING, text)
         if (reStop.matches(t))     return conv(IntentAction.STOP, text)
+
+        // ── Layer 6.6: MiniLM semantic fallback ───────────────────────────────
+        // Every rule and the MessageNLU parser has already failed to claim this
+        // input. Try on-device semantic classification before escalating to cloud.
+        // Model is lazy-loaded on first call; no cost on the fast (rule-matched) path.
+        val semanticResult = semanticIntentEngine.resolve(text)
+        SemanticIntentMapper.map(semanticResult, text)?.let { mapped ->
+            ZaraLogger.d("[Layer6.6] MiniLM handled intent: ${semanticResult.intent}")
+            return mapped
+        }
+        // ── End Layer 6.6 ─────────────────────────────────────────────────────
 
         if (t.length > 12) return cloudIntent(text)
         return unknown(text)
