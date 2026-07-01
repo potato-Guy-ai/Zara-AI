@@ -112,7 +112,8 @@ class MiniLMManager {
             t.contains("song") || t.contains("spotify") || t.contains("album")
                 -> SemanticIntent.MUSIC
 
-            t.contains("remind") || t.contains("reminder") || t.contains("in \\d+ hour".toRegex().containsMatchIn(t).toString())
+            t.contains("remind") || t.contains("reminder") ||
+            Regex("in \\d+ hour").containsMatchIn(t)
                 -> SemanticIntent.REMINDER
 
             t.contains("call") || t.contains("dial") || t.contains("phone") || t.contains("ring")
