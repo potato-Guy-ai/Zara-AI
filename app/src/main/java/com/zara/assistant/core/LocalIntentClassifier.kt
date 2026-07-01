@@ -44,6 +44,13 @@ import com.zara.assistant.utils.ZaraLogger
  *   (preferred per spec). A zero-argument convenience constructor creates
  *   the default stack (MiniLMManager → SemanticIntentEngine) so all
  *   existing call sites that do `LocalIntentClassifier()` need no changes.
+ *
+ * Layer 6.6 bugfix — reCallAction false-positive on reminder phrases:
+ *   reCallAction uses find() (substring match), so "remind me to call X"
+ *   was matching "call X" mid-string and returning CALL before MiniLM ran.
+ *   Fix: reReminderPrefix guard added before the reCallAction block.
+ *   Any text starting with a reminder trigger word bypasses the CALL branch
+ *   entirely and falls through to MiniLM. Direct call commands are unaffected.
  */
 class LocalIntentClassifier(
     private val semanticIntentEngine: SemanticIntentEngine = SemanticIntentEngine(MiniLMManager())
@@ -54,6 +61,10 @@ class LocalIntentClassifier(
         "describe|difference between|meaning of|definition of|understand).*"
     )
     private val reCallAction  = Regex("(?:call|dial|phone|ring|make (?:a )?call (?:to|for))\\s+(.+)")
+    // Layer 6.6 bugfix: reminder phrases must never trigger the CALL rule.
+    // reCallAction.find() is a substring match — it fires on "remind me to call X"
+    // by finding "call X" mid-string. Guard against this with a prefix check.
+    private val reReminderPrefix = Regex("^(?:remind\\b|set (?:a )?reminder\\b|reminder to\\b).*")
     private val reAnswerCall  = Regex(".*(answer|pick up).*(call).*")
     private val reEndCall     = Regex(".*(hang up|end call|end the call|reject call|disconnect).*")
     private val reWhatsappChannel = Regex(".*whatsapp.*")
@@ -98,16 +109,20 @@ class LocalIntentClassifier(
 
         if (reAnswerCall.matches(t)) return action(IntentAction.ANSWER_CALL, text)
         if (reEndCall.matches(t))    return action(IntentAction.END_CALL, text)
-        reCallAction.find(t)?.let { m ->
-            val target = m.groupValues[1].trim()
-            if (target.isNotBlank()) return action(IntentAction.CALL, text, target = target)
+        // Layer 6.6 bugfix: skip CALL branch for reminder-prefixed inputs.
+        // "remind me to call X" must reach MiniLM, not be claimed here.
+        if (!reReminderPrefix.matches(t)) {
+            reCallAction.find(t)?.let { m ->
+                val target = m.groupValues[1].trim()
+                if (target.isNotBlank()) return action(IntentAction.CALL, text, target = target)
+            }
         }
 
         if (isMessageIntent(t)) {
             val intent = messageIntent(t, text)
             if (intent.action != IntentAction.UNKNOWN) return intent
             // Old command-style parser recognized the gate (e.g. "tell ")
-            // but couldn't extract contact/body (no "saying"/"that"/":" etc.)
+            // but couldn't extract contact/body (no "saying"/"that"/":"  etc.)
             // — fall through to MessageNLU below instead of returning UNKNOWN.
         }
         // Layer 6.7 Phase 3: casual-phrasing fallback (tell/let/ask/say/inform).
