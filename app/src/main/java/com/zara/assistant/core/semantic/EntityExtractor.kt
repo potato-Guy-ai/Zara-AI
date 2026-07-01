@@ -19,7 +19,7 @@ package com.zara.assistant.core.semantic
  * Supported entity sets per intent:
  *   MESSAGING  → contact, message
  *   MUSIC      → song, app
- *   REMINDER   → duration
+ *   REMINDER   → duration, task (optional)
  *   (others)   → empty map; add entries as those intents become active
  */
 object EntityExtractor {
@@ -124,10 +124,19 @@ object EntityExtractor {
     // ── REMINDER ─────────────────────────────────────────────────────────────
 
     /**
-     * Extracts reminder duration as a human-readable string.
+     * Extracts reminder duration and optional task.
      *
-     * Patterns: "in X minutes/hours/seconds" / "after X ..."
-     * Returns {"duration": "2 hours"} etc.
+     * Duration patterns: "in X minutes/hours/seconds" / "after X ..."
+     * Task pattern: text between "remind me to" and the duration phrase.
+     *
+     * Examples:
+     *   "remind me in 2 hours"
+     *     → {duration: "2 hours"}
+     *   "remind me to call rahman in 2 hours"
+     *     → {task: "call rahman", duration: "2 hours"}
+     *   "remind me to drink water after 30 minutes"
+     *     → {task: "drink water", duration: "30 minutes"}
+     *
      * More complex patterns (absolute times, dates) are out of scope here.
      */
     private fun extractReminder(text: String): Map<String, String> {
@@ -135,10 +144,19 @@ object EntityExtractor {
         val result = mutableMapOf<String, String>()
 
         val reDuration = Regex("(?:in|after)\\s+(\\d+)\\s+(second|seconds|minute|minutes|hour|hours)")
-        reDuration.find(t)?.let { m ->
-            val amount = m.groupValues[1]
-            val unit   = m.groupValues[2]
-            result["duration"] = "$amount $unit"
+        val durationMatch = reDuration.find(t)
+        if (durationMatch != null) {
+            result["duration"] = "${durationMatch.groupValues[1]} ${durationMatch.groupValues[2]}"
+        }
+
+        // Extract task: text between "remind me to" and the start of the duration phrase.
+        // Only fires when both anchors are present.
+        if (durationMatch != null) {
+            val reTask = Regex("remind\\s+me\\s+to\\s+(.+?)\\s+(?:in|after)\\s+\\d+\\s+(?:second|seconds|minute|minutes|hour|hours)")
+            reTask.find(t)?.let { m ->
+                val task = m.groupValues[1].trim()
+                if (task.isNotBlank()) result["task"] = task
+            }
         }
 
         return result
