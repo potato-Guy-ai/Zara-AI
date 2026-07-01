@@ -5,7 +5,7 @@ on:
     branches: 
       - main
       - develop
-      - layer6-5b-dev
+      - layer6-6-minilm-intent
   pull_request:
     branches: [main]
 
