@@ -201,14 +201,30 @@ class LocalIntentClassifier(
         // Every rule and the MessageNLU parser has already failed to claim this
         // input. Try on-device semantic classification before escalating to cloud.
         // Model is lazy-loaded on first call; no cost on the fast (rule-matched) path.
+        ZaraLogger.d("[Layer6.6-DIAG] resolve() START text='$text'")
         val semanticResult = semanticIntentEngine.resolve(text)
-        SemanticIntentMapper.map(semanticResult, text)?.let { mapped ->
+        ZaraLogger.d("[Layer6.6-DIAG] resolve() DONE intent=${semanticResult.intent} confidence=${semanticResult.confidence} entities=${semanticResult.entities} fallback=${semanticResult.fallbackRequired}")
+        ZaraLogger.d("[Layer6.6-DIAG] map() CALL")
+        val mappedResult = try {
+            SemanticIntentMapper.map(semanticResult, text)
+        } catch (e: Exception) {
+            ZaraLogger.e("[Layer6.6-DIAG] map() EXCEPTION ${e::class.simpleName}: ${e.message}\n${e.stackTraceToString()}")
+            throw e
+        }
+        ZaraLogger.d("[Layer6.6-DIAG] map() RETURNED ${if (mappedResult == null) "null" else "non-null action=${mappedResult.action} type=${mappedResult.type}"}")
+        mappedResult?.let { mapped ->
+            ZaraLogger.d("[Layer6.6-DIAG] let{} ENTERED mapped.action=${mapped.action}")
             ZaraLogger.d("[Layer6.6] MiniLM handled intent: ${semanticResult.intent}")
             return mapped
         }
         // ── End Layer 6.6 ─────────────────────────────────────────────────────
 
-        if (t.length > 12) return cloudIntent(text)
+        ZaraLogger.d("[Layer6.6-DIAG] FELL THROUGH t.length=${t.length}")
+        if (t.length > 12) {
+            ZaraLogger.d("[Layer6.6-DIAG] → cloudIntent()")
+            return cloudIntent(text)
+        }
+        ZaraLogger.d("[Layer6.6-DIAG] → unknown()")
         return unknown(text)
     }
 
