@@ -19,6 +19,7 @@ import com.zara.assistant.execution.ExecutionPlan
 import com.zara.assistant.execution.ExecutionRequirement
 import com.zara.assistant.media.MediaControlAction
 import com.zara.assistant.media.MediaControlManager
+import com.zara.assistant.memory.MemoryManager
 import com.zara.assistant.models.ClarificationCandidate
 import com.zara.assistant.models.ClarificationEntityType
 import com.zara.assistant.models.PendingClarification
@@ -32,6 +33,10 @@ import com.zara.assistant.playback.PremiumPlaybackEngine
 import com.zara.assistant.playback.SpotifyApiClientImpl
 import com.zara.assistant.playback.SpotifyPlaybackResultType
 import com.zara.assistant.playback.UserTierDetector
+import com.zara.assistant.tasks.ReminderParser
+import com.zara.assistant.tasks.TaskModel
+import com.zara.assistant.tasks.TaskRepository
+import com.zara.assistant.tasks.TaskSchedule
 import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
@@ -61,12 +66,31 @@ import java.util.UUID
  * already pending. This call site, and VoiceSessionManager.runWorkflow()'s
  * call site, both now gate on store()'s return value instead of duplicating
  * the hasPending() check beforehand.
+ *
+ * Phase 3 (Task Memory System): SET_REMINDER handling added to executeRaw().
+ * Flow: raw utterance → ReminderParser.parse() → TaskRepository.create() →
+ * confirmation response echoed to user.
+ * AM/PM clarification: when ReminderParser returns ambiguousAmPm=true,
+ * a PendingClarification is stored with entityType=AMPM and the original
+ * raw utterance in REMINDER_RAW_TEXT. ClarificationManager already resolves
+ * the next utterance ("am"/"pm") and restores the original intent via
+ * originalIntent; ActionExecutor re-enters executeSetReminder() with the
+ * AMPM_HINT extra populated so ReminderParser can re-parse unambiguously.
+ *
+ * Phase 4 integration point: after TaskRepository.create(), the scheduler
+ * call site is clearly marked with TODO(PHASE_4). ReminderScheduler.scheduleNext(context)
+ * should be called there — it does not exist yet and is intentionally absent.
  */
 class ActionExecutor(private val context: Context) {
 
     private val appActions   = AppActions(context)
     private val callActions  = CallActions(context)
     private val mediaActions = MediaActions(context)
+
+    // Phase 3: TaskRepository uses MemoryManager which only needs Context.
+    // Constructed lazily to avoid DataStore initialisation cost on every
+    // ActionExecutor instantiation — most intents never touch the task system.
+    private val taskRepository: TaskRepository by lazy { TaskRepository(MemoryManager(context)) }
 
     suspend fun execute(intent: ZaraIntent): String {
         ZaraLogger.d("Executing: ${intent.action} target=${intent.target}")
@@ -305,6 +329,107 @@ class ActionExecutor(private val context: Context) {
         }
     }
 
+    // ── Phase 3: SET_REMINDER ─────────────────────────────────────────────────
+
+    /**
+     * Handles SET_REMINDER intent from executeRaw().
+     *
+     * Two entry modes:
+     *
+     * 1. First call — no AMPM_HINT in extras:
+     *    Reads REMINDER_RAW_TEXT, calls ReminderParser.parse().
+     *    - Unambiguous result → creates task, returns confirmation string.
+     *    - ambiguousAmPm=true → stores a PendingClarification with
+     *      entityType=AMPM and the current intent as originalIntent.
+     *      The REMINDER_RAW_TEXT is embedded in the originalIntent's extras
+     *      so re-entry gets exactly the same raw text back.
+     *      Returns a prompt asking "Did you mean AM or PM?".
+     *
+     * 2. Re-entry after AM/PM clarification — AMPM_HINT is populated:
+     *    ClarificationManager resolves "am"/"pm", stamps AMPM_HINT onto a
+     *    copy of the originalIntent, and re-fires executeIntent → ActionExecutor.
+     *    This function reads AMPM_HINT and appends " am" or " pm" to the
+     *    raw text before re-parsing, which lets ReminderParser resolve the
+     *    hour unambiguously.
+     *
+     * Phase 4 integration point: after TaskRepository.create(), call
+     *   ReminderScheduler.scheduleNext(context)
+     * This is marked with TODO(PHASE_4) below. ReminderScheduler does not
+     * exist yet. Do NOT add a stub — the task is created and persisted
+     * correctly; Phase 4 only needs to add the scheduling call here.
+     */
+    private suspend fun executeSetReminder(intent: ZaraIntent): String {
+        val rawText  = intent.extra[IntentExtra.REMINDER_RAW_TEXT] ?: intent.rawText
+        val ampmHint = intent.extra[IntentExtra.AMPM_HINT]
+
+        // On AM/PM clarification re-entry, append the hint so the parser
+        // resolves without ambiguity. e.g. "remind me at 6" + " am" → "remind me at 6 am"
+        val textToParse = if (!ampmHint.isNullOrBlank()) "$rawText $ampmHint" else rawText
+
+        val parsed = ReminderParser.parse(textToParse)
+        ZaraLogger.d("[Reminder] parsed schedule=${parsed.schedule} deadline=${parsed.deadlineMs} body=${parsed.body} ambiguous=${parsed.ambiguousAmPm}")
+
+        // AM/PM still ambiguous even after a hint (shouldn't happen, but guard it).
+        if (parsed.ambiguousAmPm && ampmHint.isNullOrBlank()) {
+            // Store clarification so ClarificationManager routes the next
+            // "am"/"pm" utterance back here with AMPM_HINT stamped.
+            if (!ClarificationManager.hasPending()) {
+                ClarificationManager.store(
+                    PendingClarification(
+                        clarificationId = UUID.randomUUID().toString(),
+                        originalIntent  = intent,   // carries REMINDER_RAW_TEXT in extras
+                        entityType      = ClarificationEntityType.AMPM,
+                        candidates      = listOf(
+                            ClarificationCandidate(displayName = "AM", resolvedValue = "am"),
+                            ClarificationCandidate(displayName = "PM", resolvedValue = "pm")
+                        )
+                    )
+                )
+                ContinuationContext.activate(ContinuationScope.CLARIFICATION)
+            }
+            return "Did you mean AM or PM?"
+        }
+
+        val body = parsed.body.ifBlank { rawText }
+
+        val task = TaskModel(
+            body       = body,
+            schedule   = parsed.schedule,
+            deadline   = parsed.deadlineMs,
+            recurrence = parsed.recurrence
+        )
+
+        taskRepository.create(task)
+        ZaraLogger.d("[Reminder] created task=${task.id} schedule=${task.schedule} deadline=${task.deadline}")
+
+        // TODO(PHASE_4): call ReminderScheduler.scheduleNext(context) here.
+        // ReminderScheduler does not exist yet. This is the exact integration
+        // point — no other change to this function will be needed in Phase 4.
+        // The task is already persisted; scheduleNext() reads active tasks and
+        // arms the next AlarmManager alarm.
+
+        return buildReminderConfirmation(parsed, body)
+    }
+
+    /** Builds a human-readable confirmation for the created reminder. */
+    private fun buildReminderConfirmation(parsed: com.zara.assistant.tasks.ParsedReminderTime, body: String): String {
+        val scheduleDesc = when (val s = parsed.schedule) {
+            is TaskSchedule.Exact    -> {
+                val fmt = java.text.SimpleDateFormat("h:mm a, MMM d", java.util.Locale.getDefault())
+                "at ${fmt.format(java.util.Date(s.triggerMs))}"
+            }
+            is TaskSchedule.Flexible -> "around ${s.label.replace('_', ' ')}"
+            TaskSchedule.Unscheduled -> if (parsed.deadlineMs != null) {
+                val fmt = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+                "before ${fmt.format(java.util.Date(parsed.deadlineMs))}"
+            } else "when you're ready"
+        }
+        val recurrenceDesc = parsed.recurrence?.let { " — repeats ${it.type.name.lowercase()}" } ?: ""
+        return "Got it. I'll remind you to $body $scheduleDesc$recurrenceDesc."
+    }
+
+    // ── End Phase 3 ───────────────────────────────────────────────────────────
+
     private suspend fun executeRaw(intent: ZaraIntent): String {
         return when (intent.action) {
             IntentAction.CALL -> {
@@ -323,6 +448,8 @@ class ActionExecutor(private val context: Context) {
                 executeResolvedSms(intent)
                     ?: appActions.sendSms(intent.target ?: return "Who should I message?", intent.extra[IntentExtra.BODY] ?: "")
             }
+            // Phase 3: reminder handling
+            IntentAction.SET_REMINDER -> executeSetReminder(intent)
             IntentAction.OPEN_APP -> {
                 val pkg  = intent.extra[IntentExtra.APP_PACKAGE]
                 val name = intent.extra[IntentExtra.APP_NAME] ?: intent.extra[IntentExtra.APP] ?: intent.target ?: return "Which app?"
