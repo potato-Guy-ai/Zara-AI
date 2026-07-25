@@ -5,6 +5,14 @@ package com.zara.assistant.core
  *
  * Added: MEDIA_CONTROL action constant.
  * Added: MEDIA_ACTION extra key.
+ *
+ * Phase 3 (Task Memory System):
+ * Added: SET_REMINDER action constant.
+ * Added: REMINDER_RAW_TEXT extra — raw utterance preserved for AM/PM re-parse.
+ * Added: AMPM_HINT extra — "am" or "pm" injected by ClarificationManager
+ *        resolution when user answers an ambiguous-time clarification.
+ * Added: REMINDER_TASK_ID extra — populated by ActionExecutor after TaskRepository
+ *        creates the task; Phase 4 ReminderScheduler uses this to arm the alarm.
  */
 data class ZaraIntent(
     val type: IntentType,
@@ -34,6 +42,8 @@ object IntentAction {
     const val OPEN_CAMERA    = "OPEN_CAMERA"
     const val SET_ALARM      = "SET_ALARM"
     const val SET_TIMER      = "SET_TIMER"
+    // Phase 3: task/reminder system
+    const val SET_REMINDER   = "SET_REMINDER"
     const val SET_WIFI       = "SET_WIFI"
     const val SET_BLUETOOTH  = "SET_BLUETOOTH"
     const val SET_FLASHLIGHT = "SET_FLASHLIGHT"
@@ -83,6 +93,13 @@ object IntentExtra {
     const val NEEDS_CLARIFICATION = "needs_clarification"
     // Layer 6.5F Phase 1
     const val MEDIA_ACTION = "media_action"  // stores MediaControlAction.name()
+    // Phase 3: reminder extras
+    /** The original raw utterance — preserved so ActionExecutor can re-parse with an AM/PM hint. */
+    const val REMINDER_RAW_TEXT = "reminder_raw_text"
+    /** "am" or "pm" — injected when ClarificationManager resolves an ambiguous-time clarification. */
+    const val AMPM_HINT         = "ampm_hint"
+    /** UUID of the created TaskModel — populated after TaskRepository.create(); consumed by Phase 4 scheduler. */
+    const val REMINDER_TASK_ID  = "reminder_task_id"
 }
 
 object ChannelType {
