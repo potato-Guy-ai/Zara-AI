@@ -9,7 +9,7 @@ import java.util.UUID
  * Layer 5.3 + 5 Hardening + Layer 6 Architecture Fix
  *
  * ClarificationManager is the SOLE clarification authority.
- * Handles CONTACT, APP, and CONTEXT (Layer 6) entity types.
+ * Handles CONTACT, APP, CONTEXT (Layer 6), and AMPM (Phase 3) entity types.
  *
  * For CONTEXT type:
  *   resolvedContextText() returns the pending resolved text if user confirmed.
@@ -19,6 +19,9 @@ object ClarificationManager {
 
     private var pending: PendingClarification? = null
     private val cancelWords = setOf("cancel", "stop", "never mind", "nevermind")
+
+    // Hoisted: was compiled on every resolve() call.
+    private val reNumeric = Regex("""\d+""")
 
     // Layer 6: holds resolved text after CONTEXT confirmation; read once then cleared
     private var confirmedContextText: String? = null
@@ -76,11 +79,32 @@ object ClarificationManager {
             }
         }
 
+        // AMPM type (Phase 3): resolve the "am"/"pm" reply into an AMPM_HINT
+        // extra and re-fire the original intent so ActionExecutor re-parses
+        // the reminder time unambiguously. Handled BEFORE generic candidate
+        // matching so the reply can never be mistaken for a contact name.
+        if (p.entityType == ClarificationEntityType.AMPM) {
+            val hint = ampmHintFrom(trimmed)
+                // Numeric selection ("1"/"2") falls back to candidate lookup.
+                ?: p.candidates.getOrNull(trimmed.toIntOrNull()?.minus(1) ?: -1)?.resolvedValue
+            pending = null
+            if (hint == null) return null
+            val newExtra = p.originalIntent.extra.toMutableMap()
+            newExtra[IntentExtra.AMPM_HINT] = hint
+            ExecutionTelemetry.record(
+                intent          = p.originalIntent.action,
+                resolvedEntity  = hint,
+                confidence      = "1.0",
+                executionResult = "clarification_resolved"
+            )
+            return p.originalIntent.copy(extra = newExtra)
+        }
+
         // CONTACT / APP: existing logic
         val storedCandidates = p.candidates
 
         val selected: ClarificationCandidate? = when {
-            trimmed.matches(Regex("\\d+")) -> storedCandidates.getOrNull(trimmed.toInt() - 1)
+            trimmed.matches(reNumeric) -> storedCandidates.getOrNull(trimmed.toInt() - 1)
             storedCandidates.any { ContactNormalizer.normalize(it.displayName) == trimmed } ->
                 storedCandidates.first { ContactNormalizer.normalize(it.displayName) == trimmed }
             storedCandidates.any { ContactNormalizer.normalize(it.displayName).contains(trimmed) } ->
@@ -105,6 +129,7 @@ object ClarificationManager {
                 newExtra[IntentExtra.APP_NAME]          = selected.displayName
                 newExtra[IntentExtra.ENTITY_CONFIDENCE] = selected.confidence.toString()
             }
+            ClarificationEntityType.AMPM    -> { /* handled above */ }
             ClarificationEntityType.CONTEXT -> { /* handled above */ }
         }
 
@@ -136,4 +161,18 @@ object ClarificationManager {
             entityType      = ClarificationEntityType.APP,
             candidates      = candidates.map { ClarificationCandidate(it.first, it.second) }
         )
+
+    /**
+     * Maps an AM/PM clarification reply to a hint value.
+     * Accepts bare "am"/"pm", dotted variants ("a.m."), natural time-of-day
+     * words, and full times ("6 pm" — last token decides).
+     */
+    private fun ampmHintFrom(text: String): String? {
+        val last = text.split(" ").lastOrNull()?.trim() ?: return null
+        return when (last) {
+            "am", "a.m", "a.m.", "morning"                              -> "am"
+            "pm", "p.m", "p.m.", "afternoon", "evening", "night", "tonight" -> "pm"
+            else -> null
+        }
+    }
 }

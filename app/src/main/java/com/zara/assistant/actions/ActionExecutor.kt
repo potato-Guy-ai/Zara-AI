@@ -385,7 +385,6 @@ class ActionExecutor(private val context: Context) {
                         )
                     )
                 )
-                ContinuationContext.activate(ContinuationScope.CLARIFICATION)
             }
             return "Did you mean AM or PM?"
         }
