@@ -93,7 +93,11 @@ object ReminderParser {
         """(\d+(?:\.\d+)?)\s*(hours?|hrs?|minutes?|mins?|seconds?|secs?)""",
         RegexOption.IGNORE_CASE
     )
-    private val reRelativePrefix = Regex("""^in\s+""", RegexOption.IGNORE_CASE)
+    // The "in" anchor may appear anywhere in the utterance (e.g. after
+    // "remind me"), so it is NOT anchored to the start of the string.
+    // Requiring a digit right after "in" avoids false positives like
+    // "in the evening" or "in my car".
+    private val reRelativePrefix = Regex("""\bin\s+(?=\d)""", RegexOption.IGNORE_CASE)
 
     // Flexible: "sometime tomorrow evening", "this evening", "tomorrow", "this weekend"
     private val reFlexible = Regex(
@@ -219,7 +223,7 @@ object ReminderParser {
      * If only one interpretation is in the future, pick it without asking.
      */
     private fun resolveAtTime(
-        match: Regex.MatchResult,
+        match: MatchResult,
         cal: Calendar,
         nowMs: Long
     ): Pair<Long, Boolean> {
@@ -283,12 +287,13 @@ object ReminderParser {
 
     // ── Relative extraction ───────────────────────────────────────────────────
 
-    /** Returns total offset milliseconds if text begins with "in X unit[s]", else null. */
+    /** Returns total offset milliseconds if the text contains "in X unit[s]", else null. */
     private fun extractRelative(text: String): Long? {
-        if (!reRelativePrefix.containsMatchIn(text)) return null
+        val anchor = reRelativePrefix.find(text) ?: return null
         var totalMs = 0L
         var found = false
-        reRelativeUnit.findAll(text).forEach { m ->
+        // Only units at or after the "in" anchor count as the relative offset.
+        reRelativeUnit.findAll(text, anchor.range.first).forEach { m ->
             val value = m.groupValues[1].toDoubleOrNull() ?: return@forEach
             val unit  = m.groupValues[2].lowercase()
             totalMs += when {
@@ -304,7 +309,7 @@ object ReminderParser {
 
     private fun stripRelative(text: String): String =
         reRelativePrefix.replace(text, "").let { reRelativeUnit.replace(it, "") }
-            .replace(Regex("""and\s*""", RegexOption.IGNORE_CASE), "").trim()
+            .replace(Regex("""\band\b\s*""", RegexOption.IGNORE_CASE), "").trim()
 
     // ── Deadline extraction ───────────────────────────────────────────────────
 
