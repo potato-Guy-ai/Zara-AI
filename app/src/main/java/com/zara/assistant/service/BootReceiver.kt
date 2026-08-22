@@ -10,6 +10,7 @@ import com.zara.assistant.memory.MemoryManager
 import com.zara.assistant.services.ZaraForegroundService
 import com.zara.assistant.tasks.ReminderScheduler
 import com.zara.assistant.tasks.TaskRepository
+import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
