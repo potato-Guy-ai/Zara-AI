@@ -137,5 +137,18 @@
             </intent-filter>
         </receiver>
 
+        <!-- Phase 4: fires on the single armed reminder alarm (ACTION_TASK_DUE)
+             or the post-boot/idle catch-up broadcast (ACTION_TASKS_CATCH_UP).
+             Both are sent as explicit intents (setClassName) by
+             ReminderScheduler, so exported=false is sufficient. -->
+        <receiver
+            android:name=".tasks.ReminderReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.zara.assistant.tasks.ACTION_TASK_DUE" />
+                <action android:name="com.zara.assistant.tasks.ACTION_TASKS_CATCH_UP" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>

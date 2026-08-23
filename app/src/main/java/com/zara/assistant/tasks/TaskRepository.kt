@@ -131,6 +131,7 @@ class TaskRepository(private val memory: MemoryManager) {
             r.addProperty("intervalMs", it.intervalMs)
             obj.add("recurrence", r)
         }
+        task.recurrenceAnchorMs?.let { obj.addProperty("recurrenceAnchorMs", it) }
         obj.addProperty("createdAt", task.createdAt)
         task.completedAt?.let { obj.addProperty("completedAt", it) }
         task.snoozedUntil?.let { obj.addProperty("snoozedUntil", it) }
@@ -169,6 +170,7 @@ class TaskRepository(private val memory: MemoryManager) {
                         intervalMs = it.get("intervalMs").asLong
                     )
                 },
+                recurrenceAnchorMs = obj.get("recurrenceAnchorMs")?.takeIf { !it.isJsonNull }?.asLong,
                 createdAt  = obj.get("createdAt").asLong,
                 completedAt = obj.get("completedAt")?.takeIf { !it.isJsonNull }?.asLong,
                 snoozedUntil = obj.get("snoozedUntil")?.takeIf { !it.isJsonNull }?.asLong,
