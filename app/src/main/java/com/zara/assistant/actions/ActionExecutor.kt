@@ -34,9 +34,11 @@ import com.zara.assistant.playback.SpotifyApiClientImpl
 import com.zara.assistant.playback.SpotifyPlaybackResultType
 import com.zara.assistant.playback.UserTierDetector
 import com.zara.assistant.tasks.ReminderParser
+import com.zara.assistant.tasks.ReminderScheduler
 import com.zara.assistant.tasks.TaskModel
 import com.zara.assistant.tasks.TaskRepository
 import com.zara.assistant.tasks.TaskSchedule
+import com.zara.assistant.tasks.TaskWidgetSync
 import com.zara.assistant.utils.ZaraLogger
 import java.util.UUID
 
@@ -77,9 +79,8 @@ import java.util.UUID
  * originalIntent; ActionExecutor re-enters executeSetReminder() with the
  * AMPM_HINT extra populated so ReminderParser can re-parse unambiguously.
  *
- * Phase 4 integration point: after TaskRepository.create(), the scheduler
- * call site is clearly marked with TODO(PHASE_4). ReminderScheduler.scheduleNext(context)
- * should be called there — it does not exist yet and is intentionally absent.
+ * Phase 4: after TaskRepository.create(), executeSetReminder() calls
+ * ReminderScheduler.scheduleNext(context) to arm the next reminder event.
  */
 class ActionExecutor(private val context: Context) {
 
@@ -352,11 +353,8 @@ class ActionExecutor(private val context: Context) {
      *    raw text before re-parsing, which lets ReminderParser resolve the
      *    hour unambiguously.
      *
-     * Phase 4 integration point: after TaskRepository.create(), call
-     *   ReminderScheduler.scheduleNext(context)
-     * This is marked with TODO(PHASE_4) below. ReminderScheduler does not
-     * exist yet. Do NOT add a stub — the task is created and persisted
-     * correctly; Phase 4 only needs to add the scheduling call here.
+     * Phase 4: after TaskRepository.create(), ReminderScheduler.scheduleNext()
+     * re-arms the single AlarmManager alarm for the next due task event.
      */
     private suspend fun executeSetReminder(intent: ZaraIntent): String {
         val rawText  = intent.extra[IntentExtra.REMINDER_RAW_TEXT] ?: intent.rawText
@@ -401,11 +399,13 @@ class ActionExecutor(private val context: Context) {
         taskRepository.create(task)
         ZaraLogger.d("[Reminder] created task=${task.id} schedule=${task.schedule} deadline=${task.deadline}")
 
-        // TODO(PHASE_4): call ReminderScheduler.scheduleNext(context) here.
-        // ReminderScheduler does not exist yet. This is the exact integration
-        // point — no other change to this function will be needed in Phase 4.
-        // The task is already persisted; scheduleNext() reads active tasks and
-        // arms the next AlarmManager alarm.
+        // Phase 4: re-arm the single reminder alarm. scheduleNext() reads all
+        // active tasks itself, so it may pick a different (earlier) task than
+        // the one just created — that is correct one-alarm-at-a-time behavior.
+        ReminderScheduler.scheduleNext(context)
+
+        // Phase 5: a task was just created — refresh the widget.
+        TaskWidgetSync.updateAll(context)
 
         return buildReminderConfirmation(parsed, body)
     }

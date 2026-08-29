@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 5: subtle pill background for the widget's "+ Add" / "Done" taps.
+     TextView-based buttons: RemoteViews inflate under the launcher's theme,
+     where Material button widgets are unsafe. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#33FFFFFF" />
+    <corners android:radius="20dp" />
+</shape>

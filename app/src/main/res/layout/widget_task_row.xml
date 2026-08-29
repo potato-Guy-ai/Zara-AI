@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 5: one task row inside the widget. Inflated repeatedly as a child
+     RemoteViews by TaskWidgetSync. TextView-only on purpose: RemoteViews
+     inflation runs under the HOST (launcher) theme, so Material widgets are
+     avoided entirely. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_row_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:gravity="center_vertical"
+    android:paddingTop="5dp"
+    android:paddingBottom="5dp">
+
+    <TextView
+        android:id="@+id/widget_row_body"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:textColor="#FFFFFF"
+        android:textSize="13sp" />
+
+    <!-- Simple per-task Done action. -->
+    <TextView
+        android:id="@+id/widget_row_done"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginLeft="8dp"
+        android:text="Done"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp"
+        android:background="@drawable/widget_pill_bg"
+        android:paddingLeft="10dp"
+        android:paddingRight="10dp"
+        android:paddingTop="3dp"
+        android:paddingBottom="3dp" />
+
+</LinearLayout>

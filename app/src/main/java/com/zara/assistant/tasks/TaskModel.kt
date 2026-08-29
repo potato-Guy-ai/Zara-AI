@@ -73,12 +73,11 @@ data class RecurrenceRule(
  * this field; the reminder trigger is either explicit (from "at 5") or
  * auto-calculated by the scheduler (deadline - 30 min) for deadline-only tasks.
  *
- * [recurrenceAnchorMs] (Phase 4): the canonical series time for a recurring
- * task, set by ReminderReceiver via ReminderScheduler.advanceRecurrence().
- * Rolling always starts from this anchor rather than from the most recent
- * fire/snooze, which is what keeps a recurring reminder's wall-clock time
- * (e.g. daily 8:00) stable across snoozes, missed fires, and catch-up after
- * the device was off. Null until the first advancement.
+ * [recurrenceAnchorMs] pins the canonical series time for recurring tasks.
+ * It is captured on the first recurrence advance and never modified afterwards —
+ * critically, snoozing does NOT touch it, so a snoozed daily 8:00 reminder
+ * continues at 8:00 instead of drifting to the snooze time. Null until the
+ * first advance; ReminderScheduler falls back to the current trigger then.
  *
  * [tags] used for vault archiving logic: tasks tagged "important" are never
  * auto-archived even when old.
@@ -93,7 +92,7 @@ data class TaskModel(
     val schedule: TaskSchedule = TaskSchedule.Unscheduled,
     val deadline: Long? = null,          // epoch ms; null = no deadline
     val recurrence: RecurrenceRule? = null,
-    val recurrenceAnchorMs: Long? = null, // epoch ms; canonical recurrence series time (Phase 4)
+    val recurrenceAnchorMs: Long? = null,// epoch ms; canonical recurring series time
     val createdAt: Long = System.currentTimeMillis(),
     val completedAt: Long? = null,
     val snoozedUntil: Long? = null,      // epoch ms; null = not snoozed
