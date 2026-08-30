@@ -7,7 +7,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
-import com.zara.assistant.core.MemoryManager
+import com.zara.assistant.R
+import com.zara.assistant.memory.MemoryManager
 import com.zara.assistant.ui.MainActivity
 import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.CoroutineScope
