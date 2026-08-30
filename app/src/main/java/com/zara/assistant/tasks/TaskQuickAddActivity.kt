@@ -9,6 +9,7 @@ import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import com.zara.assistant.R
 import com.zara.assistant.voice.VoiceSessionManager
 import kotlinx.coroutines.delay

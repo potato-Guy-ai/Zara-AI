@@ -20,8 +20,13 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
  *
  * M7 fix: sessionContext uses CopyOnWriteArrayList for thread-safe reads
  * across multiple coroutine dispatchers (Default + Main).
+ *
+ * [context] is exposed (read-only) so callers that already hold a
+ * MemoryManager — e.g. TaskVaultSync, which only receives a MemoryManager,
+ * not a Context — can reach filesystem APIs (getExternalFilesDir, etc.)
+ * without threading a second Context parameter through every call site.
  */
-class MemoryManager(private val context: Context) {
+class MemoryManager(val context: Context) {
 
     // ── Persistent storage (DataStore, plaintext) ────────────────────────────
 
