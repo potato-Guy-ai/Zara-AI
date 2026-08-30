@@ -19,9 +19,10 @@ import com.zara.assistant.utils.ZaraLogger
  * discriminator field. No RuntimeTypeAdapterFactory dependency needed because
  * deserialization is done manually in [scheduleFromJson].
  *
- * Obsidian sync is NOT wired in Phase 1. When Phase 6 adds ObsidianVaultWriter,
- * it will be injected here as a fire-and-forget side-effect call — no blocking,
- * no structural change to this class required.
+ * Phase 6 Obsidian sync: [TaskVaultSync] is called fire-and-forget after each
+ * mutating operation. It launches its own IO coroutine and returns before any
+ * disk I/O happens, so these calls neither block nor fail the operations above.
+ * The vault mirror is best-effort; this class remains the source of truth.
  */
 class TaskRepository(private val memory: MemoryManager) {
 
@@ -57,12 +58,14 @@ class TaskRepository(private val memory: MemoryManager) {
         all.add(task)
         save(all)
         ZaraLogger.d("[TaskRepo] created task=${task.id} body=${task.body}")
+        TaskVaultSync.upsert(memory, task)
         return task
     }
 
     suspend fun update(updated: TaskModel) {
         val all = getAll().map { if (it.id == updated.id) updated else it }
         save(all)
+        TaskVaultSync.upsert(memory, updated)
     }
 
     suspend fun updateState(id: String, state: TaskState, completedAt: Long? = null) {
@@ -106,6 +109,7 @@ class TaskRepository(private val memory: MemoryManager) {
         if (toArchive.isNotEmpty()) {
             save(toKeep)
             ZaraLogger.d("[TaskRepo] archived ${toArchive.size} tasks")
+            TaskVaultSync.archive(memory, toArchive)
         }
         return toArchive
     }
