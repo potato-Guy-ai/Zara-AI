@@ -67,6 +67,15 @@ object AppActionPlanner {
         // Prevents "music" in "pause/play/stop/continue music" from injecting KEY_APP.
         if (intent.action == IntentAction.MEDIA_CONTROL) return intent
 
+        // SET_REMINDER must bypass planning entirely. The reminder body can
+        // contain action words — "remember to CALL John at 1 pm" — and
+        // detectApp() matches " call " → APP_PHONE → injects a CALL plan →
+        // ExecutionGuard builds a call contract → ActionExecutor.executeContract
+        // dials John before executeRaw reaches the SET_REMINDER handler. Returning
+        // unchanged (no KEY_APP) keeps guard() a no-op, so the reminder reaches
+        // ActionExecutor.executeRaw → executeSetReminder().
+        if (intent.action == IntentAction.SET_REMINDER) return intent
+
         // B2.1 FIX: if this is a pure OPEN_APP intent (no media verb), skip planning entirely.
         // Allows OPEN_APP to flow to executeRaw() → openApp() / launchByPackage() unchanged.
         if (intent.action == IntentAction.OPEN_APP &&
