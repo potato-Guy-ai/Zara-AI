@@ -21,10 +21,20 @@ import java.util.Locale
  * creation/completion/scheduling/notifications/widgets are unaffected.
  *
  * Vault location: absolute path stored in MemoryManager (DataStore) under
- * [KEY_VAULT_PATH]. When unset (the default) or not an existing directory,
- * every operation is a no-op and task functionality continues normally.
- * Nothing else in the app writes that key yet; a future settings surface
- * can point Zara at "<vault>/Zara Tasks".
+ * [KEY_VAULT_PATH] when the user has configured one. Until a settings screen
+ * exists to write that key, [resolveVaultRoot] falls back to an app-private
+ * default directory (Context.getExternalFilesDir) so the task↔note mirror is
+ * exercised out of the box instead of being permanently dormant.
+ *
+ * IMPORTANT — default-vault caveat: on Android 11+ (scoped storage),
+ * getExternalFilesDir() is app-private storage. Other apps, including
+ * Obsidian, CANNOT see it. This default proves the mirror logic works and
+ * gives the user real Markdown files to inspect (via a file manager with
+ * "show hidden/app data" access, or `adb pull`), but it is NOT a substitute
+ * for pointing at a real shared Obsidian vault. Doing that for real requires
+ * a settings screen that writes [KEY_VAULT_PATH] to a location the user
+ * picks (ideally via Storage Access Framework, since scoped storage blocks
+ * arbitrary shared paths without it) — not yet built.
  *
  * Notes are plain Markdown designed to read naturally in Obsidian: YAML
  * frontmatter with tags/metadata plus a checkbox body line. Content is fully
@@ -46,6 +56,9 @@ object TaskVaultSync {
 
     private const val TASKS_DIR = "Zara Tasks"
     private const val ARCHIVE_DIR = "Archive"
+
+    /** App-private fallback root subfolder, used until a real vault path is configured. */
+    private const val DEFAULT_VAULT_DIRNAME = "Zara Vault"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -99,23 +112,33 @@ object TaskVaultSync {
         }
     }
 
-    /** Null when unset (silent) or unavailable (logged once). Never throws. */
+    /**
+     * Resolves the vault root to write into. Prefers the user-configured
+     * [KEY_VAULT_PATH] when it's set and exists; otherwise falls back to an
+     * app-private default directory so the mirror is never permanently
+     * dormant. Returns null only when even the fallback is unavailable
+     * (getExternalFilesDir() returning null — e.g. media unmounted).
+     */
     private suspend fun resolveVaultRoot(memory: MemoryManager): File? {
-        val path = try { memory.get(KEY_VAULT_PATH)?.trim().orEmpty() } catch (e: Exception) {
+        val configured = try {
+            memory.get(KEY_VAULT_PATH)?.trim().orEmpty()
+        } catch (e: Exception) {
             ZaraLogger.e("$TAG vault path read failed: ${e.message}")
-            return null
+            ""
         }
-        if (path.isEmpty()) return null
-        val dir = File(path)
-        if (!dir.isDirectory) {
+        if (configured.isNotEmpty()) {
+            val dir = File(configured)
+            if (dir.isDirectory) {
+                warnedMissingVault = false
+                return dir
+            }
             if (!warnedMissingVault) {
                 warnedMissingVault = true
-                ZaraLogger.e("$TAG configured vault path missing: $path")
+                ZaraLogger.e("$TAG configured vault path missing: $configured — using default vault instead")
             }
-            return null
         }
-        warnedMissingVault = false
-        return dir
+        val appRoot = memory.context.getExternalFilesDir(null) ?: return null
+        return File(appRoot, DEFAULT_VAULT_DIRNAME).apply { mkdirs() }
     }
 
     private fun tasksDir(root: File): File = File(root, TASKS_DIR).apply { mkdirs() }
