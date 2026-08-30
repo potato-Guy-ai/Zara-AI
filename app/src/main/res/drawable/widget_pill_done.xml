@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 5: filled green pill for the per-task "Done" tap in the widget. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/zara_done" />
+    <corners android:radius="20dp" />
+</shape>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Phase 5: one task card inside the widget — subtle translucent rounded
+     fill with a hairline stroke so rows read as distinct cards. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#14FFFFFF" />
+    <corners android:radius="10dp" />
+    <stroke android:width="1dp" android:color="#1AFFFFFF" />
+</shape>

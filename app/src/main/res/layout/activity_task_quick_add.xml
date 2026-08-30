@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Phase 5: voice-first quick add screen launched from the widget.
-     Starts listening immediately when mic permission is held; typing is the
+     Polished dark surface: title + status, live mic-listening indicator,
+     rounded input and an accent "Add task" button. Typing stays the
      always-visible fallback. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
@@ -11,18 +12,57 @@
     android:padding="24dp">
 
     <TextView
-        android:id="@+id/quick_add_status"
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:minHeight="64dp"
+        android:text="Add a task"
+        android:textColor="@color/white"
+        android:textSize="24sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="By voice, or type it below."
+        android:textColor="@color/zara_text_dim"
+        android:textSize="13sp" />
+
+    <!-- Live mic-listening indicator (id kept: TaskQuickAddActivity toggles it). -->
+    <FrameLayout
+        android:id="@+id/quick_add_mic_wrap"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="24dp"
+        android:background="@drawable/quick_add_mic_circle">
+        <ImageView
+            android:id="@+id/quick_add_mic"
+            android:layout_width="30dp"
+            android:layout_height="30dp"
+            android:layout_gravity="center"
+            android:src="@drawable/ic_mic"
+            android:tint="@color/white"
+            android:contentDescription="Microphone" />
+    </FrameLayout>
+
+    <TextView
+        android:id="@+id/quick_add_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="12dp"
+        android:minHeight="24dp"
+        android:gravity="center"
         android:text="Listening… say your reminder."
-        android:textColor="#FFFFFF"
+        android:textColor="@color/white"
         android:textSize="16sp" />
 
     <ProgressBar
         android:id="@+id/quick_add_spinner"
         android:layout_width="28dp"
         android:layout_height="28dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="8dp"
         android:indeterminate="true"
         android:visibility="gone"
         tools:visibility="visible" />
@@ -32,19 +72,31 @@
         android:id="@+id/quick_add_input"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="24dp"
+        android:background="@drawable/quick_add_input_bg"
         android:hint='Type instead — e.g. "remind me to call mom at 5pm"'
-        android:textColorHint="#9E9E9E"
-        android:textColor="#FFFFFF"
-        android:maxLines="2"
+        android:importantForAutofill="no"
+        android:inputType="text"
         android:imeOptions="actionDone"
-        android:inputType="text" />
+        android:maxLines="2"
+        android:maxLength="240"
+        android:paddingLeft="16dp"
+        android:paddingRight="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:textColor="@color/white"
+        android:textColorHint="@color/zara_text_dim"
+        android:textSize="15sp" />
 
     <Button
         android:id="@+id/quick_add_send"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="Add task" />
+        android:layout_marginTop="16dp"
+        android:background="@drawable/quick_add_send_bg"
+        android:text="Add task"
+        android:textColor="@color/white"
+        android:textSize="15sp"
+        android:textStyle="bold" />
 
 </LinearLayout>

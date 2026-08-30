@@ -34,6 +34,7 @@ class TaskQuickAddActivity : AppCompatActivity() {
 
     private lateinit var status: TextView
     private lateinit var input: EditText
+    private lateinit var micWrap: android.view.View
 
     private val voiceSession by lazy { VoiceSessionManager(applicationContext) }
 
@@ -50,6 +51,7 @@ class TaskQuickAddActivity : AppCompatActivity() {
 
         status = findViewById(R.id.quick_add_status)
         input  = findViewById(R.id.quick_add_input)
+        micWrap = findViewById(R.id.quick_add_mic_wrap)
 
         findViewById<android.widget.Button>(R.id.quick_add_send)
             .setOnClickListener { submitTyped() }
@@ -69,11 +71,13 @@ class TaskQuickAddActivity : AppCompatActivity() {
 
     private fun startVoice() {
         status.text = "Listening… say your reminder."
+        micWrap.visibility = android.view.View.VISIBLE
         voiceSession.startManualListening { response -> onVoiceResponse(response) }
     }
 
     private fun onVoiceResponse(response: String) {
         if (isDestroyed || isFinishing) return
+        micWrap.visibility = android.view.View.GONE
         findViewById<android.widget.ProgressBar>(R.id.quick_add_spinner).visibility =
             android.view.View.GONE
 
@@ -92,6 +96,7 @@ class TaskQuickAddActivity : AppCompatActivity() {
     private fun submitTyped() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
+        micWrap.visibility = android.view.View.GONE
         status.text = "Adding task…"
         voiceSession.processText(text) { response ->
             if (isDestroyed || isFinishing) return@processText
@@ -102,6 +107,7 @@ class TaskQuickAddActivity : AppCompatActivity() {
     }
 
     private fun showTypingFallback(message: String) {
+        micWrap.visibility = android.view.View.GONE
         status.text = message
         input.requestFocus()
     }

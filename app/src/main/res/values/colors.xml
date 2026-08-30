@@ -2,4 +2,18 @@
 <resources>
     <color name="black">#000000</color>
     <color name="white">#FFFFFF</color>
+
+    <!-- Zara semantic palette (shared by widget + voice command window). -->
+    <color name="zara_bg">#121212</color>
+    <color name="zara_surface">#1E1E1E</color>
+    <color name="zara_card">#1A1A1A</color>
+    <color name="zara_accent">#4C8DFF</color>
+    <color name="zara_accent_dim">#2E5FB0</color>
+    <color name="zara_done">#4CAF50</color>
+    <color name="zara_overdue">#FF8A80</color>
+    <color name="zara_text">#FFFFFF</color>
+    <color name="zara_text_dim">#9E9E9E</color>
+    <color name="zara_stroke">#33FFFFFF</color>
+    <color name="zara_widget_bg_grad_top">#1F2129</color>
+    <color name="zara_widget_bg_grad_bottom">#121212</color>
 </resources>

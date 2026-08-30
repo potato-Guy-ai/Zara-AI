@@ -22,7 +22,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="Zara Tasks"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/white"
             android:textSize="14sp"
             android:textStyle="bold" />
 
@@ -32,10 +32,10 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="+ Add"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/white"
             android:textSize="13sp"
             android:textStyle="bold"
-            android:background="@drawable/widget_pill_bg"
+            android:background="@drawable/widget_pill_accent"
             android:paddingLeft="12dp"
             android:paddingRight="12dp"
             android:paddingTop="4dp"
@@ -55,7 +55,7 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
         android:text="No pending tasks"
-        android:textColor="#9E9E9E"
+        android:textColor="@color/zara_text_dim"
         android:textSize="13sp"
         android:visibility="gone" />
 
@@ -64,7 +64,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
-        android:textColor="#9E9E9E"
+        android:textColor="@color/zara_text_dim"
         android:textSize="12sp"
         android:visibility="gone"
         tools:text="+3 more" />

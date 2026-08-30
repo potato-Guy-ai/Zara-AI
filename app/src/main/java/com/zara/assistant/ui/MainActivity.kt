@@ -1,6 +1,7 @@
 package com.zara.assistant.ui
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,6 +18,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,9 +27,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import com.zara.assistant.memory.MemoryManager
 import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.services.ZaraForegroundService
+import com.zara.assistant.tasks.TaskRepository
+import com.zara.assistant.tasks.TaskVaultSync
 import com.zara.assistant.ui.theme.ZaraTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -37,17 +44,45 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { vm.onPermissionsResult() }
 
+    /**
+     * SAF vault picker: lets the user select their real Obsidian vault folder.
+     * Persists the read+write grant so the mirror can use it across restarts,
+     * stores the tree URI, then re-mirrors every existing task into the vault.
+     */
+    private val vaultTreeLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        try {
+            contentResolver.takePersistableUriPermission(uri, flags)
+        } catch (e: Exception) {
+            // Non-persistable provider — the session grant still works.
+        }
+        val memory = MemoryManager(applicationContext)
+        lifecycleScope.launch {
+            try {
+                // Await the config write so the re-mirror can't race it.
+                TaskVaultSync.persistVaultTreeUri(memory, uri)
+                val repo = TaskRepository(memory)
+                repo.getAll().forEach { TaskVaultSync.upsert(memory, it) }
+            } catch (e: Exception) {
+                // Best-effort mirror — log and move on.
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val missing = PermissionManager.missing(this)
         if (missing.isNotEmpty()) permLauncher.launch(missing)
         startForegroundService(Intent(this, ZaraForegroundService::class.java))
-        setContent { ZaraTheme { ZaraScreen(vm) } }
+        setContent { ZaraTheme { ZaraScreen(vm, onPickVault = { vaultTreeLauncher.launch(null) }) } }
     }
 }
 
 @Composable
-fun ZaraScreen(vm: AssistantViewModel) {
+fun ZaraScreen(vm: AssistantViewModel, onPickVault: () -> Unit) {
     val messages by vm.messages.collectAsState()
     val isListening by vm.isListening.collectAsState()
     // Layer 6.5G Phase 2 — live transcript
@@ -76,6 +111,16 @@ fun ZaraScreen(vm: AssistantViewModel) {
                 fontSize = 22.sp,
                 modifier = Modifier.padding(16.dp)
             )
+            IconButton(
+                onClick = onPickVault,
+                modifier = Modifier.padding(end = 8.dp)
+            ) {
+                Icon(
+                    Icons.Default.Settings,
+                    contentDescription = "Set Obsidian vault",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
         }
 
         LazyColumn(
