@@ -9,6 +9,7 @@ import androidx.core.content.ContextCompat
 import com.zara.assistant.memory.MemoryManager
 import com.zara.assistant.services.ZaraForegroundService
 import com.zara.assistant.tasks.ReminderScheduler
+import com.zara.assistant.tasks.DailyReset
 import com.zara.assistant.tasks.TaskRepository
 import com.zara.assistant.utils.ZaraLogger
 import kotlinx.coroutines.CoroutineScope
@@ -42,7 +43,10 @@ class BootReceiver : BroadcastReceiver() {
             val result = goAsync()
             CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
                 try {
-                    TaskRepository(MemoryManager(appContext)).archiveOld()
+                    val memory = MemoryManager(appContext)
+                    // Phase B: refresh overdue DAILY tasks for a new day after boot.
+                    DailyReset.runIfNeeded(memory)
+                    TaskRepository(memory).archiveOld()
                     ReminderScheduler.scheduleNext(appContext)
                 } catch (e: Exception) {
                     ZaraLogger.e("[Boot] archiveOld failed: ${e.message}")

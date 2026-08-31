@@ -54,6 +54,17 @@ enum class RecurrenceType {
     DAILY, WEEKLY, WEEKDAYS, CUSTOM
 }
 
+// ── Derived task categories ──────────────────────────────────────────────────
+// Pure derivation from recurrence — NEVER persisted, so no migration is needed.
+// The category describes the task's RECURRENCE NATURE, not whether its next
+// trigger happens today (e.g. a weekly task whose next occurrence is today is
+// still STAGED).
+
+enum class TaskCategory {
+    DAILY,   // recurrence fires within the day: DAILY or WEEKDAYS
+    STAGED   // one-offs + multi-day recurrence (WEEKLY/CUSTOM) + unscheduled
+}
+
 /**
  * Defines recurrence for a task.
  * [intervalMs] is used for CUSTOM; ignored for DAILY/WEEKLY/WEEKDAYS (those use
@@ -113,3 +124,20 @@ data class TaskModel(
         const val DEADLINE_LEAD_MS = 30L * 60 * 1000  // 30 minutes
     }
 }
+
+/**
+ * Derived task category. A task is DAILY when its recurrence fires within the
+ * day (DAILY or WEEKDAYS); every other task — one-offs, WEEKLY, CUSTOM, and
+ * future recurrence types unless explicitly classified as daily — is STAGED.
+ *
+ * This is intentionally an extension on TaskModel (not a stored field) so the
+ * persisted model and Gson serialization remain unchanged.
+ */
+fun TaskModel.category(): TaskCategory =
+    if (recurrence != null &&
+        (recurrence.type == RecurrenceType.DAILY || recurrence.type == RecurrenceType.WEEKDAYS)
+    ) {
+        TaskCategory.DAILY
+    } else {
+        TaskCategory.STAGED
+    }

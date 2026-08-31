@@ -177,5 +177,16 @@
                 android:resource="@xml/widget_task_info" />
         </receiver>
 
+        <!-- Phase C: handles Daily/Staged tab clicks on the task widget. The
+             PendingIntents are built and delivered by our own widget code as
+             explicit intents, so exported=false is sufficient. -->
+        <receiver
+            android:name=".tasks.TaskWidgetActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.zara.assistant.tasks.ACTION_SWITCH_TAB" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>

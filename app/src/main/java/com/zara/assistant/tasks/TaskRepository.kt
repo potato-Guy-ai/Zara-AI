@@ -73,6 +73,22 @@ class TaskRepository(private val memory: MemoryManager) {
         update(task.copy(state = state, completedAt = completedAt))
     }
 
+    /**
+     * Phase B — flips DAILY tasks left OVERDUE back to PENDING for a new day.
+     * Only category() == DAILY and state == OVERDUE are touched; DONE,
+     * CANCELLED, and STAGED tasks are never modified. Operates on the already-
+     * active task list once (no redundant full reads).
+     *
+     * @return the number of tasks reset to PENDING.
+     */
+    suspend fun resetDailyForNewDay(): Int {
+        val due = getActive().filter {
+            it.category() == TaskCategory.DAILY && it.state == TaskState.OVERDUE
+        }
+        due.forEach { updateState(it.id, TaskState.PENDING) }
+        return due.size
+    }
+
     suspend fun incrementOverdueCount(id: String) {
         val task = getById(id) ?: return
         update(task.copy(overdueReminderCount = task.overdueReminderCount + 1))

@@ -25,6 +25,10 @@ import kotlinx.coroutines.launch
  * per-row Done action routed through [ReminderReceiver]'s existing
  * ACTION_MARK_DONE broadcast (same path as notification actions).
  *
+ * Phase C: the widget now has a Daily/Staged tab bar. The selected tab is
+ * stored PER WIDGET ID (see [tabKey]), so multiple widgets can independently
+ * show their own section. [TaskWidgetActionReceiver] handles the tab clicks.
+ *
  * Deliberately lightweight: plain RemoteViews.addView rows (no ListView /
  * RemoteViewsService), updatePeriodMillis=0, no service / polling / timer.
  * Refresh happens exclusively when task state changes — every mutation site
@@ -44,6 +48,25 @@ class TaskReminderWidget : AppWidgetProvider() {
 }
 
 /**
+ * Which section a widget instance is currently showing.
+ * Stored per widget id as the enum name — never arbitrary strings.
+ */
+enum class WidgetTaskTab {
+    DAILY,
+    STAGED;
+
+    fun toCategory(): TaskCategory = when (this) {
+        DAILY  -> TaskCategory.DAILY
+        STAGED -> TaskCategory.STAGED
+    }
+
+    companion object {
+        fun fromName(name: String?): WidgetTaskTab =
+            name?.let { runCatching { valueOf(it) }.getOrNull() } ?: DAILY
+    }
+}
+
+/**
  * Single entry point for refreshing every placed Zara task widget.
  * Called from each task mutation site: ActionExecutor.create (voice),
  * ReminderReceiver fire/done/snooze, and TaskQuickAddActivity completion.
@@ -51,7 +74,12 @@ class TaskReminderWidget : AppWidgetProvider() {
 object TaskWidgetSync {
 
     private const val TAG = "[TaskWidget]"
+
+    /** Row cap per tab. */
     private const val MAX_ROWS = 5
+
+    /** MemoryManager key prefix for the per-widget selected tab. */
+    internal const val TAB_KEY_PREFIX = "widget_tab_"
 
     private const val COLOR_NORMAL = -0x1        // white
     private const val COLOR_OVERDUE = 0xFFFF8A80.toInt()
@@ -61,28 +89,97 @@ object TaskWidgetSync {
         val appContext = context.applicationContext
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
+                // Phase B: at the start of a new local day, refresh overdue DAILY
+                // tasks back to PENDING before rendering. Guarded to run at most
+                // once per day, so the frequent updateAll path stays cheap.
+                DailyReset.runIfNeeded(MemoryManager(appContext))
+
                 val manager = AppWidgetManager.getInstance(appContext)
                 val ids = manager.getAppWidgetIds(
                     ComponentName(appContext, TaskReminderWidget::class.java)
                 )
                 if (ids.isEmpty()) return@launch
 
-                val repo = TaskRepository(MemoryManager(appContext))
+                val memory = MemoryManager(appContext)
+                val repo = TaskRepository(memory)
                 val active = repo.getActive()
-                manager.updateAppWidget(ids, buildRemoteViews(appContext, active))
+
+                // Phase C: each widget renders its own selected tab.
+                for (id in ids) {
+                    val tab = readTab(memory, id)
+                    manager.updateAppWidget(id, buildRemoteViews(appContext, active, tab, id))
+                }
             } catch (e: Exception) {
                 ZaraLogger.e("$TAG update failed: ${e.message}")
             }
         }
     }
 
-    private fun buildRemoteViews(context: Context, tasks: List<TaskModel>): RemoteViews {
+    /** Refresh a single widget instance (used after a tab switch). */
+    fun updateWidget(context: Context, widgetId: Int) {
+        val appContext = context.applicationContext
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            try {
+                val manager = AppWidgetManager.getInstance(appContext)
+                val memory = MemoryManager(appContext)
+                val repo = TaskRepository(memory)
+                val active = repo.getActive()
+                val tab = readTab(memory, widgetId)
+                manager.updateAppWidget(widgetId, buildRemoteViews(appContext, active, tab, widgetId))
+            } catch (e: Exception) {
+                ZaraLogger.e("$TAG updateWidget($widgetId) failed: ${e.message}")
+            }
+        }
+    }
+
+    private fun tabKey(widgetId: Int): String = TAB_KEY_PREFIX + widgetId
+
+    private fun readTab(memory: MemoryManager, widgetId: Int): WidgetTaskTab =
+        try {
+            WidgetTaskTab.fromName(memory.get(tabKey(widgetId)))
+        } catch (e: Exception) {
+            WidgetTaskTab.DAILY
+        }
+
+    internal suspend fun saveTab(memory: MemoryManager, widgetId: Int, tab: WidgetTaskTab) {
+        try {
+            memory.set(tabKey(widgetId), tab.name)
+        } catch (e: Exception) {
+            ZaraLogger.e("$TAG saveTab($widgetId) failed: ${e.message}")
+        }
+    }
+
+    private fun buildRemoteViews(
+        context: Context,
+        tasks: List<TaskModel>,
+        activeTab: WidgetTaskTab,
+        widgetId: Int
+    ): RemoteViews {
         val rv = RemoteViews(context.packageName, R.layout.widget_task_reminder)
 
         rv.setOnClickPendingIntent(R.id.widget_add, quickAddPendingIntent(context))
 
+        // Phase C: style the two tab pills and wire their click intents.
+        val daily = activeTab == WidgetTaskTab.DAILY
+        val staged = activeTab == WidgetTaskTab.STAGED
+        rv.setTextViewText(R.id.widget_tab_daily, "DAILY")
+        rv.setTextViewText(R.id.widget_tab_staged, "STAGED")
+        styleTab(rv, R.id.widget_tab_daily, daily)
+        styleTab(rv, R.id.widget_tab_staged, staged)
+        rv.setOnClickPendingIntent(
+            R.id.widget_tab_daily,
+            tabPendingIntent(context, WidgetTaskTab.DAILY, widgetId)
+        )
+        rv.setOnClickPendingIntent(
+            R.id.widget_tab_staged,
+            tabPendingIntent(context, WidgetTaskTab.STAGED, widgetId)
+        )
+
+        // Filter by the active tab's category, then sort by trigger time.
         val now = System.currentTimeMillis()
-        val visible = tasks.sortedBy { it.effectiveTriggerMs() ?: Long.MAX_VALUE }
+        val visible = tasks
+            .filter { it.category() == activeTab.toCategory() }
+            .sortedBy { it.effectiveTriggerMs() ?: Long.MAX_VALUE }
 
         if (visible.isEmpty()) {
             rv.removeAllViews(R.id.widget_rows)
@@ -105,6 +202,18 @@ object TaskWidgetSync {
             rv.setViewVisibility(R.id.widget_more, android.view.View.GONE)
         }
         return rv
+    }
+
+    private fun styleTab(rv: RemoteViews, viewId: Int, active: Boolean) {
+        rv.setInt(
+            viewId, "setBackgroundResource",
+            if (active) R.drawable.widget_pill_accent else R.drawable.widget_pill_inactive
+        )
+        if (active) {
+            rv.setTextColor(viewId, android.graphics.Color.WHITE)
+        } else {
+            rv.setTextColor(viewId, 0xFF9E9E9E.toInt())
+        }
     }
 
     private fun buildRow(context: Context, task: TaskModel, nowMs: Long): RemoteViews {
@@ -152,4 +261,27 @@ object TaskWidgetSync {
             Intent(context, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+
+    /**
+     * Phase C: builds a broadcast PendingIntent that switches [widgetId]'s tab.
+     * The target widget id is baked into the intent (and the request code) so
+     * the receiver updates ONLY that widget — no global tab state, and no
+     * cross-widget PendingIntent collisions.
+     */
+    private fun tabPendingIntent(
+        context: Context,
+        target: WidgetTaskTab,
+        widgetId: Int
+    ): PendingIntent {
+        val intent = Intent(context, TaskWidgetActionReceiver::class.java)
+            .setAction(TaskWidgetActionReceiver.ACTION_SWITCH_TAB)
+            .putExtra(TaskWidgetActionReceiver.EXTRA_APPWIDGET_ID, widgetId)
+            .putExtra(TaskWidgetActionReceiver.EXTRA_TARGET_TAB, target.name)
+        return PendingIntent.getBroadcast(
+            context,
+            50000 + widgetId * 2 + target.ordinal,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
 }

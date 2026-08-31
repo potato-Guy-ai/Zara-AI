@@ -17,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -28,6 +29,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
+import com.zara.assistant.knowledge.KnowledgeBase
 import com.zara.assistant.memory.MemoryManager
 import com.zara.assistant.permissions.PermissionManager
 import com.zara.assistant.services.ZaraForegroundService
@@ -72,17 +74,61 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Phase D/E — SAF knowledge-folder picker (opt-in, read-only).
+     *
+     * The user selects an Obsidian folder that Zara may READ as reference
+     * material. It is stored SEPARATELY from the task vault (KEY_KNOWLEDGE_URI),
+     * so the write-only task mirror is never affected. After persisting the
+     * grant + URI we refresh KnowledgeBase's in-memory cache so the folder is
+     * loaded once and served for eligible Q&A questions.
+     */
+    private val knowledgeTreeLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        try {
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (e: Exception) {
+            // Non-persistable provider — the session grant still works for reads.
+        }
+        val memory = MemoryManager(applicationContext)
+        lifecycleScope.launch {
+            try {
+                TaskVaultSync.persistKnowledgeTreeUri(memory, uri)
+                KnowledgeBase.refresh(memory)
+            } catch (e: Exception) {
+                // Best-effort — knowledge stays disabled until a folder is usable.
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val missing = PermissionManager.missing(this)
         if (missing.isNotEmpty()) permLauncher.launch(missing)
         startForegroundService(Intent(this, ZaraForegroundService::class.java))
-        setContent { ZaraTheme { ZaraScreen(vm, onPickVault = { vaultTreeLauncher.launch(null) }) } }
+        setContent {
+            ZaraTheme {
+                ZaraScreen(
+                    vm = vm,
+                    onPickVault = { vaultTreeLauncher.launch(null) },
+                    onPickKnowledge = { knowledgeTreeLauncher.launch(null) }
+                )
+            }
+        }
     }
 }
 
 @Composable
-fun ZaraScreen(vm: AssistantViewModel, onPickVault: () -> Unit) {
+fun ZaraScreen(
+    vm: AssistantViewModel,
+    onPickVault: () -> Unit,
+    onPickKnowledge: () -> Unit
+) {
     val messages by vm.messages.collectAsState()
     val isListening by vm.isListening.collectAsState()
     // Layer 6.5G Phase 2 — live transcript
@@ -111,6 +157,16 @@ fun ZaraScreen(vm: AssistantViewModel, onPickVault: () -> Unit) {
                 fontSize = 22.sp,
                 modifier = Modifier.padding(16.dp)
             )
+            IconButton(
+                onClick = onPickKnowledge,
+                modifier = Modifier.padding(end = 4.dp)
+            ) {
+                Icon(
+                    Icons.Default.MenuBook,
+                    contentDescription = "Set Obsidian knowledge folder",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
             IconButton(
                 onClick = onPickVault,
                 modifier = Modifier.padding(end = 8.dp)

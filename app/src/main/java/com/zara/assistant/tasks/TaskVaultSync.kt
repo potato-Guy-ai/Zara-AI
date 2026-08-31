@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -54,6 +55,14 @@ object TaskVaultSync {
 
     /** DataStore key holding the persisted SAF tree URI string. */
     private const val KEY_VAULT_URI = "zara_obsidian_tree_uri"
+
+    /**
+     * Phase D — DataStore key for the SAF tree URI of the user's Obsidian
+     * KNOWLEDGE folder (the read path). Kept separate from [KEY_VAULT_URI]:
+     * the vault holds the user's tasks and is WRITE-only from Zara's side,
+     * while this folder is READ-only knowledge injected into Q&A answers.
+     */
+    private const val KEY_KNOWLEDGE_URI = "zara_obsidian_knowledge_uri"
 
     private const val TASKS_DIR = "Zara Tasks"
     private const val ARCHIVE_DIR = "Archive"
@@ -125,6 +134,167 @@ object TaskVaultSync {
             } catch (e: Exception) {
                 ZaraLogger.e("$TAG vault tree URI set failed: ${e.message}")
             }
+        }
+    }
+
+    // ── Phase D: Obsidian knowledge READ path (additive, Q&A-only) ────────────
+    //
+    // These suspend functions read plain Markdown from the user-picked
+    // KNOWLEDGE folder (KEY_KNOWLEDGE_URI). They are the ONLY mechanism by
+    // which Obsidian content reaches the assistant, and callers must treat the
+    // returned strings as UNTRUSTED data (see KnowledgeBase + the Q&A gate in
+    // Phase F). The task WRITE path above is never touched here.
+
+    /** Point the knowledge read path at a SAF tree URI. Mirrors [persistVaultTreeUri]. */
+    suspend fun persistKnowledgeTreeUri(memory: MemoryManager, treeUri: Uri) {
+        memory.set(KEY_KNOWLEDGE_URI, treeUri.toString())
+        ZaraLogger.d("$TAG knowledge tree URI set: $treeUri")
+    }
+
+    /** Fire-and-forget wrapper around [persistKnowledgeTreeUri]. */
+    fun setKnowledgeTreeUri(memory: MemoryManager, treeUri: Uri) {
+        scope.launch {
+            try {
+                persistKnowledgeTreeUri(memory, treeUri)
+            } catch (e: Exception) {
+                ZaraLogger.e("$TAG knowledge tree URI set failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Suspend read of the markdown names directly under the knowledge root.
+     * Returns a stable, sorted list, or empty when the folder is not configured
+     * or unreadable. Never throws.
+     */
+    suspend fun listNoteNames(memory: MemoryManager): List<String> =
+        withContext(Dispatchers.IO) {
+            resolveKnowledgeReader(memory)?.listMarkdownNames() ?: emptyList()
+        }
+
+    /**
+     * Suspend read of one note's full Markdown body by name. Returns null when
+     * the folder is not configured, the note is missing, or reading fails.
+     * Empty result never throws.
+     */
+    suspend fun readNote(memory: MemoryManager, name: String): String? =
+        withContext(Dispatchers.IO) {
+            resolveKnowledgeReader(memory)?.readFile(name)
+        }
+
+    /**
+     * Suspend read of every markdown note under the knowledge root as a
+     * name -> content map. This is the bulk primitive KnowledgeBase caches on
+     * first access. Never throws; returns empty map when unconfigured.
+     */
+    suspend fun readAllNotes(memory: MemoryManager): Map<String, String> =
+        withContext(Dispatchers.IO) {
+            val reader = resolveKnowledgeReader(memory) ?: return@withContext emptyMap()
+            val out = linkedMapOf<String, String>()
+            for (name in reader.listMarkdownNames()) {
+                reader.readFile(name)?.let { out[name] = it }
+            }
+            out
+        }
+
+    /** True when the user has selected an Obsidian knowledge folder (read path). */
+    suspend fun isKnowledgeConfigured(memory: MemoryManager): Boolean =
+        readKey(memory, KEY_KNOWLEDGE_URI).isNotEmpty()
+
+    /**
+     * Stable identity of the currently configured knowledge folder (its SAF URI
+     * string). Used by KnowledgeBase as the cache key so the cache invalidates
+     * automatically whenever the user points the knowledge folder elsewhere.
+     */
+    suspend fun knowledgeCacheKey(memory: MemoryManager): String =
+        readKey(memory, KEY_KNOWLEDGE_URI)
+
+    private suspend fun resolveKnowledgeReader(memory: MemoryManager): KnowledgeTreeReader? {
+        val uriStr = readKey(memory, KEY_KNOWLEDGE_URI)
+        if (uriStr.isEmpty()) return null
+        return try {
+            KnowledgeTreeReader(memory.context, Uri.parse(uriStr))
+        } catch (e: Exception) {
+            ZaraLogger.e("$TAG knowledge reader resolve failed: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * SAF read sink for the knowledge folder. Self-contained (does not reuse
+     * the write sink) so a knowledge-read failure can never disturb the task
+     * write path.
+     */
+    private class KnowledgeTreeReader(
+        private val context: Context,
+        private val treeUri: Uri
+    ) {
+        private val resolver get() = context.contentResolver
+
+        /** Markdown file display names directly under the knowledge root. */
+        fun listMarkdownNames(): List<String> = try {
+            children(treeUri)
+                .filter { it.isMarkdown && it.displayName.isNotBlank() }
+                .map { it.displayName }
+                .sorted()
+        } catch (e: Exception) {
+            ZaraLogger.e("$TAG list knowledge names failed: ${e.message}")
+            emptyList()
+        }
+
+        /** Read the full text content of a note by display name, or null. */
+        fun readFile(name: String): String? = try {
+            val doc = children(treeUri)
+                .firstOrNull { it.displayName == name && it.isMarkdown }
+                ?.let { DocumentsContract.buildDocumentUriUsingTree(treeUri, it.docId) }
+                ?: return null
+            val text = resolver.openInputStream(doc)?.use { ins ->
+                ins.bufferedReader(Charsets.UTF_8).readText()
+            }
+            text?.takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            ZaraLogger.e("$TAG read knowledge note '$name' failed: ${e.message}")
+            null
+        }
+
+        private val ChildDoc.isMarkdown: Boolean
+            get() = mimeType == "text/markdown" ||
+                mimeType == "text/plain" ||
+                displayName.endsWith(".md", ignoreCase = true) ||
+                displayName.endsWith(".markdown", ignoreCase = true)
+
+        private data class ChildDoc(val docId: String, val displayName: String, val mimeType: String)
+
+        private fun children(parent: Uri): List<ChildDoc> = try {
+            val parentDocId = DocumentsContract.getDocumentId(parent)
+            val childrenUri =
+                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+            val cols = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            )
+            val result = mutableListOf<ChildDoc>()
+            resolver.query(childrenUri, cols, null, null, null)?.use { c ->
+                val idCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeCol = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                while (c.moveToNext()) {
+                    val docId = if (idCol >= 0) c.getString(idCol) else null
+                    if (docId == null) continue
+                    result.add(
+                        ChildDoc(
+                            docId = docId,
+                            displayName = if (nameCol >= 0) c.getString(nameCol) ?: "" else "",
+                            mimeType = if (mimeCol >= 0) c.getString(mimeCol) ?: "" else ""
+                        )
+                    )
+                }
+            }
+            result
+        } catch (e: Exception) {
+            ZaraLogger.e("$TAG list knowledge children failed: ${e.message}")
+            emptyList()
         }
     }
 

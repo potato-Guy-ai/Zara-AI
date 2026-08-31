@@ -42,6 +42,9 @@ class ReminderReceiver : BroadcastReceiver() {
         val result = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
+                // Phase B: at the start of a new local day, refresh overdue DAILY
+                // tasks back to PENDING before handling this action.
+                DailyReset.runIfNeeded(MemoryManager(appContext))
                 when (intent.action) {
                     ReminderScheduler.ACTION_TASK_DUE,
                     ReminderScheduler.ACTION_TASKS_CATCH_UP -> resolveDueTasks(appContext)
