@@ -242,19 +242,26 @@ object TaskVaultSync {
             emptyList()
         }
 
-        /** Read the full text content of a note by display name, or null. */
-        fun readFile(name: String): String? = try {
-            val doc = children(treeUri)
-                .firstOrNull { it.displayName == name && it.isMarkdown }
-                ?.let { DocumentsContract.buildDocumentUriUsingTree(treeUri, it.docId) }
-                ?: return null
-            val text = resolver.openInputStream(doc)?.use { ins ->
-                ins.bufferedReader(Charsets.UTF_8).readText()
+        /**
+         * Read the full text content of a note by display name, or null.
+         * Compile fix: block body required — an expression-bodied function
+         * (`fun readFile(...): String? = try { ... }`) cannot contain a bare
+         * `return` inside the try, which the `?: return null` below needs.
+         */
+        fun readFile(name: String): String? {
+            return try {
+                val doc = children(treeUri)
+                    .firstOrNull { it.displayName == name && it.isMarkdown }
+                    ?.let { DocumentsContract.buildDocumentUriUsingTree(treeUri, it.docId) }
+                    ?: return null
+                val text = resolver.openInputStream(doc)?.use { ins ->
+                    ins.bufferedReader(Charsets.UTF_8).readText()
+                }
+                text?.takeIf { it.isNotEmpty() }
+            } catch (e: Exception) {
+                ZaraLogger.e("$TAG read knowledge note '$name' failed: ${e.message}")
+                null
             }
-            text?.takeIf { it.isNotEmpty() }
-        } catch (e: Exception) {
-            ZaraLogger.e("$TAG read knowledge note '$name' failed: ${e.message}")
-            null
         }
 
         private val ChildDoc.isMarkdown: Boolean

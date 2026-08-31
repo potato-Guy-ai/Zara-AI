@@ -134,7 +134,10 @@ object TaskWidgetSync {
 
     private fun tabKey(widgetId: Int): String = TAB_KEY_PREFIX + widgetId
 
-    private fun readTab(memory: MemoryManager, widgetId: Int): WidgetTaskTab =
+    // Compile fix: memory.get() is a suspend function — this must be suspend
+    // too. Both call sites (updateAll's per-widget loop, updateWidget) already
+    // run inside a launched coroutine, so no caller change was needed.
+    private suspend fun readTab(memory: MemoryManager, widgetId: Int): WidgetTaskTab =
         try {
             WidgetTaskTab.fromName(memory.get(tabKey(widgetId)))
         } catch (e: Exception) {
